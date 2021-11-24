@@ -9,40 +9,50 @@ fn compileInt() !void {
     var fixed_allocator = &fba.allocator;
     //skip program name
     const program_name = ArgsItr.next(fixed_allocator).?;
-    const return_args = if (ArgsItr.next(fixed_allocator)) |argv| argv else {
-        std.log.err("Args to zig are null", .{});
-        std.log.err("{s} has invalid number of arguments.Expected 1 found 0", .{program_name});
-        std.os.exit(1);
-    };
     const output = try cwd.createFile("test/output.s", .{});
     defer output.close();
+    const first_operand = try ArgsItr.next(fixed_allocator).?;
+    const space = " ";
     try output.writer().print(
-        \\        .globl main
-        \\        .type  main, @function
+        \\{0s:>8}.globl main
+        \\{0s:>8}.type  main, @function
         \\main:
-        \\        mov  ${s}, %rax
-        \\        ret
+        \\{0s:>8}mov ${1s}, %rax
         \\
-    , .{return_args});
+    , .{ space, first_operand });
+    while (ArgsItr.next(fixed_allocator)) |argv| {
+        if (argv) |value| {
+            if (std.mem.eql(u8, value, "+")) {
+                const operand = try ArgsItr.next(fixed_allocator).?;
+                try output.writer().print("{s:>8}add ${s}, %rax", .{ space, operand });
+                continue;
+            } else if (std.mem.eql(u8, value, "-")) {
+                const operand = try ArgsItr.next(fixed_allocator).?;
+                try output.writer().print("{s:>8}sub ${s}, %rax", .{ space, operand });
+                continue;
+            } else {
+                std.log.err("Unexpected caracter: {s}", .{value});
+                std.os.exit(1);
+            }
+        } else |err| {
+            std.log.err("Args to zig are {}", .{err});
+            std.log.err("{s} has invalid number of arguments.Expected 1 found 0", .{program_name});
+            std.os.exit(1);
+        }
+    }
+    try output.writer().print(
+        \\
+        \\{s:>8}ret
+        \\
+    , .{space});
 }
 
 test "compileInt test" {
-    //    const slice = &[_:null]?[*:0]const u8{ "gcc", "-o", "output", "output.s" };
-    //    const errors = std.os.execvpeZ("gcc", slice, &[_:null]?[*:0]const u8{});
-    //    switch (errors) {
-    //        error.SystemResources => std.log.info("execvpeZ returned error {}", .{errors}),
-    //        _ => std.log.info("some other error occured", .{}),
-    //    }
-    //    //std.os.ExecveError;
-    //    const return_state = std.os.execvpeZ("./zig-out/bin/kitwacc", &[_:null]?[*:0]const u8{}, &[_:null]?[*:0]const u8{});
     var buffer: [2048]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     var fixed_allocator = &fba.allocator;
-    const return_state = try std.ChildProcess.exec(.{ .allocator = fixed_allocator, .argv = &[_][]const u8{ "gcc", "-o", "test/output", "test/output.s" } });
-    std.debug.print("\ngcc exit on stdout with\n{s}", .{return_state.stdout});
-    std.debug.print("gcc exit on stderr with\n{s}", .{return_state.stderr});
-    const exit_code = try std.ChildProcess.exec(.{ .allocator = fixed_allocator, .argv = &[_][]const u8{ "sh", "test/test_compiler.sh" } });
-    std.debug.print("{s}", .{exit_code.stdout});
+    const exit_code = try std.ChildProcess.exec(.{ .allocator = fixed_allocator, .argv = &[_][]const u8{"./test/test_compiler"} });
+    std.debug.print("{s}\n{s}", .{ exit_code.stderr, exit_code.stdout });
 }
 
 pub fn main() !void {
