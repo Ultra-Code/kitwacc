@@ -1,5 +1,6 @@
 const std = @import("std");
 const cwd = std.fs.cwd();
+const Tokenizer = @import("tokenizer.zig").Tokenizer;
 
 fn compileInt(allocator: *std.mem.Allocator, args: []const []const u8) !void {
     const program_name = args[0];
@@ -11,35 +12,37 @@ fn compileInt(allocator: *std.mem.Allocator, args: []const []const u8) !void {
 
     const output = try std.fs.cwd().createFile("test/output.s", .{});
     defer output.close();
-    const first_operand = try ArgsItr.next(fixed_allocator).?;
+
+    var tokenizer = Tokenizer.init(allocator);
+    var token = try tokenizer.tokenize(args[1]);
+
     const space = " ";
     try output.writer().print(
         \\{0s:>8}.globl main
         \\{0s:>8}.type  main, @function
         \\main:
-        \\{0s:>8}mov ${1s}, %rax
+        \\{0s:>8}mov ${1d}, %rax
         \\
-    , .{ space, first_operand });
-    while (ArgsItr.next(fixed_allocator)) |argv| {
-        if (argv) |value| {
-            if (std.mem.eql(u8, value, "+")) {
-                const operand = try ArgsItr.next(fixed_allocator).?;
-                try output.writer().print("{s:>8}add ${s}, %rax", .{ space, operand });
-                continue;
-            } else if (std.mem.eql(u8, value, "-")) {
-                const operand = try ArgsItr.next(fixed_allocator).?;
-                try output.writer().print("{s:>8}sub ${s}, %rax", .{ space, operand });
-                continue;
-            } else {
-                std.log.err("Unexpected caracter: {s}", .{value});
-                std.os.exit(1);
-            }
-        } else |err| {
-            std.log.err("Args to zig are {}", .{err});
-            std.log.err("{s} has invalid number of arguments.Expected 1 found 0", .{program_name});
-            std.os.exit(1);
+    , .{ space, token.value }); // The first token must be a number
+
+    token = tokenizer.nextToken();
+
+    // ... followed by either `+ <number>` or `- <number>`.
+    while (token.kind != .TK_EOF) : (token = tokenizer.nextToken()) {
+        if (Tokenizer.match(token, "+")) {
+            token = tokenizer.nextToken();
+            try output.writer().print("{s:>8}add ${d}, %rax\n", .{ space, token.value });
+            continue;
         }
+        if (Tokenizer.match(token, "-")) {
+            token = tokenizer.nextToken();
+            try output.writer().print("{s:>8}sub ${d}, %rax\n", .{ space, token.value });
+            continue;
+        }
+        std.log.err("Unexpected caracter: expected an operator but found '{d}'", .{token.value});
+        std.process.exit(1);
     }
+
     try output.writer().print(
         \\
         \\{s:>8}ret
@@ -48,10 +51,10 @@ fn compileInt(allocator: *std.mem.Allocator, args: []const []const u8) !void {
 }
 
 test "compileInt test" {
-    var buffer: [2048]u8 = undefined;
+    var buffer: [10240]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     var fixed_allocator = &fba.allocator;
-    const exit_code = try std.ChildProcess.exec(.{ .allocator = fixed_allocator, .argv = &[_][]const u8{"./test/test_compiler"} });
+    const exit_code = try std.ChildProcess.exec(.{ .allocator = fixed_allocator, .argv = &[_][]const u8{"./test/test-compiler"} });
     std.debug.print("{s}\n{s}", .{ exit_code.stderr, exit_code.stdout });
 }
 
