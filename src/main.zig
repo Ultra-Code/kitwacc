@@ -1,15 +1,15 @@
 const std = @import("std");
 const cwd = std.fs.cwd();
 
-fn compileInt() !void {
-    const args = std.process.args;
-    var ArgsItr = args();
-    var buffer: [100]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
-    var fixed_allocator = &fba.allocator;
-    //skip program name
-    const program_name = ArgsItr.next(fixed_allocator).?;
-    const output = try cwd.createFile("test/output.s", .{});
+fn compileInt(allocator: *std.mem.Allocator, args: []const []const u8) !void {
+    const program_name = args[0];
+    std.log.info("argv is {s}", .{args});
+    if (args.len != 2) {
+        std.log.err("{s} has invalid number of arguments.Expected 1 found 0", .{program_name});
+        return error.InvalidNumberOfArguments;
+    }
+
+    const output = try std.fs.cwd().createFile("test/output.s", .{});
     defer output.close();
     const first_operand = try ArgsItr.next(fixed_allocator).?;
     const space = " ";
@@ -56,5 +56,21 @@ test "compileInt test" {
 }
 
 pub fn main() !void {
-    try compileInt();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer if (gpa.deinit()) {
+        std.log.err("Memory Leaks Deteckted", .{});
+    };
+    var gpa_allocator = &gpa.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa_allocator);
+    defer arena.deinit();
+    var allocator = &arena.allocator;
+
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    compileInt(allocator, args) catch |err|
+        switch (err) {
+        error.InvalidNumberOfArguments => std.log.err("{s} call kitwacc with 1 argument", .{@errorName(err)}),
+        else => std.log.err("{s} error occured", .{@errorName(err)}),
+    };
 }
