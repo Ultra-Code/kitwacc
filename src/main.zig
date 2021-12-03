@@ -1,6 +1,7 @@
 const std = @import("std");
 const cwd = std.fs.cwd();
-const Tokenizer = @import("tokenizer.zig").Tokenizer;
+const tokenizers = @import("tokenizer.zig");
+const Tokenizer = tokenizers.Tokenizer;
 
 fn compileInt(allocator: *std.mem.Allocator, args: []const []const u8) !void {
     const program_name = args[0];
@@ -39,7 +40,8 @@ fn compileInt(allocator: *std.mem.Allocator, args: []const []const u8) !void {
             try output.writer().print("{s:>8}sub ${d}, %rax\n", .{ space, token.value });
             continue;
         }
-        std.log.err("Unexpected caracter: expected an operator but found '{d}'", .{token.value});
+
+        tokenizers.reportError(args[1], "^ expected an operator", token);
         std.process.exit(1);
     }
 
