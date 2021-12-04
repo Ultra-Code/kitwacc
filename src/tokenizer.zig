@@ -8,30 +8,17 @@ const TokenKind = enum {
 
 const Token = struct {
     kind: TokenKind, // Token kind
-    value: i64, // If kind is TK_NUM, its value
+    value: u64, // If kind is TK_NUM, its value
     lexeme: []const u8, // Token lexeme
     lenght: usize, // Token length
     location: usize, // location of Token in input stream
 };
 
-pub fn reportError(peek: []const u8, comptime msg: []const u8, token: *const Token) void {
-    std.log.err("Invalid Token '{c}' in '{s}' at {d}", .{
-        @intCast(u8, token.value),
-        peek,
-        token.location,
-    });
-    const location_offset = 29;
-    const token_location = token.location + location_offset;
-    const stream_width = token_location + msg.len;
-    //add empty spaces till the character where the error starts
-    std.debug.print("{[msg]s:>[width]}\n", .{ .msg = msg, .width = stream_width });
-    std.process.exit(1);
-}
-
 pub const Tokenizer = struct {
     tokens: std.ArrayList(Token), // Next token
     //The -1 sentinal represent the end or that no element is requested
     items_position: usize,
+    stream: []const u8,
 
     const Error = error{
         TerminalMismatch,
@@ -39,8 +26,12 @@ pub const Tokenizer = struct {
         InvalidToken,
     };
 
-    pub fn init(allocator: *std.mem.Allocator) Tokenizer {
-        return Tokenizer{ .tokens = std.ArrayList(Token).init(allocator), .items_position = 0 };
+    pub fn init(allocator: *std.mem.Allocator, input_stream: []const u8) Tokenizer {
+        return Tokenizer{
+            .tokens = std.ArrayList(Token).init(allocator),
+            .items_position = 0,
+            .stream = input_stream,
+        };
     }
 
     // Create a new token.
@@ -54,8 +45,25 @@ pub const Tokenizer = struct {
         });
     }
 
+    pub fn reportError(self: *const Tokenizer, comptime msg: []const u8, args: anytype) void {
+        const token = self.currentToken();
+        std.log.err("Invalid Token '{c}' in '{s}' at {d}", .{
+            @intCast(u8, token.value),
+            self.stream,
+            token.location,
+        });
+        const location_offset = 29;
+        const token_location = token.location + location_offset;
+        //add empty spaces till the character where the error starts
+        std.debug.print("{[spaces]s:>[width]}", .{ .spaces = " ", .width = token_location });
+        const format_msg = "^ " ++ msg ++ "\n";
+        std.debug.print(format_msg, args);
+        std.process.exit(1);
+    }
+
     // Tokenize `peek` and returns new tokens.
-    pub fn tokenize(self: *Tokenizer, peek: []const u8) !*const Token {
+    pub fn tokenize(self: *Tokenizer) !*const Token {
+        const peek = self.stream;
         var index: usize = 0;
         //condition to prevent out of bound index but allow procession of last token
         while (index < peek.len) : (index += 1) {
@@ -128,9 +136,9 @@ pub const Tokenizer = struct {
                 .lenght = 0,
                 .location = index,
             });
-            const error_token = self.tokens.items[self.tokens.items.len - 1];
-            //reportError(peek, "Invalid Token {c} in {s} at {d}", .{ error_token.value, peek, error_token.location });
-            reportError(peek, "^ expected number", &error_token);
+            //set current items_position to the last
+            self.items_position = self.tokens.items.len - 1;
+            self.reportError("expected number or + or -", .{});
             return error.InvalidToken;
         }
 
@@ -146,6 +154,13 @@ pub const Tokenizer = struct {
 
     // Consumes the current token if it matches `operand`.
     fn equal(token: *const Token, terminal: []const u8) bool {
+        if (token.kind == .TK_NUM) {
+            const digits = convertU8slicetoNum(terminal) catch |err| undefined_value: {
+                std.log.err("{s}:cannot convert {s} to decimal digit", .{ @errorName(err), terminal });
+                break :undefined_value undefined;
+            };
+            return if (token.value == digits) true else false;
+        }
         return std.mem.eql(u8, token.lexeme, terminal);
     }
 
@@ -161,15 +176,47 @@ pub const Tokenizer = struct {
     }
 
     // Ensure that the current terminal token matches the peek
-    pub fn match(token: *const Token, terminal: []const u8) bool {
-        return equal(token, terminal);
+    pub fn match(self: *Tokenizer, token: *const Token, terminal: []const u8) ?*const Token {
+        if (equal(token, terminal)) {
+            return self.nextToken();
+        }
+        return null;
     }
 
-    pub fn getNumber(self: *const Tokenizer) Error!i32 {
+    pub fn getNumber(self: *const Tokenizer) Error!u64 {
         if (currentToken(self).kind == .TK_NUM) {
             return currentToken(self).value;
         } else {
+            self.reportError("expected a number", .{});
             return error.TokenNotANumber;
         }
     }
 };
+
+fn convertU8slicetoNum(str: []const u8) !u64 {
+    var digits: u64 = 0;
+    const value = str[0];
+    if (std.ascii.isDigit(value)) {
+        const ascii_offset = '0';
+        const digit_index = 1;
+        // convert ascii char to number
+        digits = value - ascii_offset;
+        //look from digit_index for additional digits
+        for (str[digit_index..]) |digit| {
+            if (std.ascii.isDigit(digit)) {
+                //convert multiple number characters into a single numeric value
+                digits = digits * 10 + (digit - ascii_offset);
+                continue;
+            }
+            // digit is not a digit
+            return error.u8ToNumError;
+        }
+    } else {
+        return error.u8ToNumError;
+    }
+    return digits;
+}
+
+test "Tokenizer.convertU8toNum" {
+    try std.testing.expect(3679 == try convertU8slicetoNum("3679"));
+}
