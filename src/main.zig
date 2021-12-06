@@ -1,17 +1,6 @@
 const std = @import("std");
 const cwd = std.fs.cwd();
-const tokenizers = @import("tokenizer.zig");
-const Tokenizer = tokenizers.Tokenizer;
-
-const TokenStream = struct {
-    input: []const []const u8,
-
-    /// The caller must free the returned slice
-    fn init(allocator: *std.mem.Allocator) !TokenStream {
-        const args = try std.process.argsAlloc(allocator);
-        return TokenStream{ .input = args };
-    }
-};
+const Tokenizer = @import("tokenizer.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -39,6 +28,17 @@ pub fn main() !void {
     };
 }
 
+const TokenStream = struct {
+    input: []const []const u8,
+
+    /// The caller must free the returned slice
+    fn init(allocator: *std.mem.Allocator) !TokenStream {
+        const args = try std.process.argsAlloc(allocator);
+        return TokenStream{ .input = args };
+    }
+};
+
+
 fn compileInt(allocator: *std.mem.Allocator, stream: []const u8) !void {
     const output = try std.fs.cwd().createFile("test/output.s", .{});
     defer output.close();
@@ -53,19 +53,19 @@ fn compileInt(allocator: *std.mem.Allocator, stream: []const u8) !void {
         \\main:
         \\{0s:>8}mov ${1d}, %rax
         \\
-    , .{ space, token.value }); // The first token must be a number
+    , .{ space, tokenizer.getNumber() }); // The first token must be a number
 
     token = tokenizer.nextToken();
 
     // ... followed by either `+ <number>` or `- <number>`.
     while (token.kind != .TK_EOF) : (token = tokenizer.nextToken()) {
-        if (tokenizer.match(token, "+")) |next_token| {
+        if (tokenizer.match(token.*, "+")) |next_token| {
             const number = try tokenizer.getNumber();
             try output.writer().print("{s:>8}add ${d}, %rax\n", .{ space, number });
             continue;
         }
 
-        if (tokenizer.match(token, "-")) |next_token| {
+        if (tokenizer.match(token.*, "-")) |next_token| {
             const number = try tokenizer.getNumber();
             try output.writer().print("{s:>8}sub ${d}, %rax\n", .{ space, number });
             continue;
