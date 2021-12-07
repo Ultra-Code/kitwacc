@@ -1,16 +1,17 @@
 const std = @import("std");
 const cwd = std.fs.cwd();
-const Tokenizer = @import("tokenizer.zig");
+const parser = @import("parser.zig");
+const code_generator = @import("code_generator.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa.deinit()) {
         std.log.err("Memory Leaks Deteckted", .{});
     };
-    var gpa_allocator = &gpa.allocator;
+    const gpa_allocator = gpa.allocator();
     var arena = std.heap.ArenaAllocator.init(gpa_allocator);
     defer arena.deinit();
-    var allocator = &arena.allocator;
+    const allocator = arena.allocator();
 
     const args = try TokenStream.init(allocator);
 
@@ -22,7 +23,7 @@ pub fn main() !void {
         std.log.err("{s} call kitwacc with 1 argument", .{program_name});
         return error.InvalidNumberOfArguments;
     }
-    compileInt(allocator, stream) catch |err|
+    compileExpressions(allocator, stream) catch |err|
         switch (err) {
         else => std.log.err("{s} error occured", .{@errorName(err)}),
     };
@@ -32,59 +33,34 @@ const TokenStream = struct {
     input: []const []const u8,
 
     /// The caller must free the returned slice
-    fn init(allocator: *std.mem.Allocator) !TokenStream {
+    fn init(allocator: std.mem.Allocator) !TokenStream {
         const args = try std.process.argsAlloc(allocator);
         return TokenStream{ .input = args };
     }
 };
 
+fn compileExpressions(allocator: std.mem.Allocator, stream: []const u8) !void {
+    var Parser = parser.init(allocator, stream);
+    // Tokenize and parse.
+    const token = try Parser.tokenizeInput();
+    const ast_node = try Parser.parseExpression(token);
 
-fn compileInt(allocator: *std.mem.Allocator, stream: []const u8) !void {
-    const output = try std.fs.cwd().createFile("test/output.s", .{});
-    defer output.close();
-
-    var tokenizer = Tokenizer.init(allocator, stream);
-    var token = try tokenizer.tokenize();
-
-    const space = " ";
-    try output.writer().print(
-        \\{0s:>8}.globl main
-        \\{0s:>8}.type  main, @function
-        \\main:
-        \\{0s:>8}mov ${1d}, %rax
-        \\
-    , .{ space, tokenizer.getNumber() }); // The first token must be a number
-
-    token = tokenizer.nextToken();
-
-    // ... followed by either `+ <number>` or `- <number>`.
-    while (token.kind != .TK_EOF) : (token = tokenizer.nextToken()) {
-        if (tokenizer.match(token.*, "+")) |next_token| {
-            const number = try tokenizer.getNumber();
-            try output.writer().print("{s:>8}add ${d}, %rax\n", .{ space, number });
-            continue;
-        }
-
-        if (tokenizer.match(token.*, "-")) |next_token| {
-            const number = try tokenizer.getNumber();
-            try output.writer().print("{s:>8}sub ${d}, %rax\n", .{ space, number });
-            continue;
-        }
-
-        tokenizer.reportError("expected token {s} to match terminal + or -", .{token.lexeme});
+    if (Parser.tokenizer.currentToken().kind == .TK_EOF) {
+        var generator = try code_generator.init("test/output.s");
+        defer generator.deinit();
+        try generator.asmPrologue();
+        // Traverse the AST to emit assembly.
+        try generator.generateAsm(ast_node);
+        try generator.asmEpilogue();
+    } else {
+        Parser.tokenizer.reportError("epected more tokens because current token isn't EOF", .{});
     }
-
-    try output.writer().print(
-        \\
-        \\{s:>8}ret
-        \\
-    , .{space});
 }
 
 test "compileInt test" {
     var buffer: [10240]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
-    var fixed_allocator = &fba.allocator;
+    var fixed_allocator = fba.allocator();
     const exit_code = try std.ChildProcess.exec(.{ .allocator = fixed_allocator, .argv = &[_][]const u8{"./test/test-compiler"} });
     std.debug.print("{s}\n{s}", .{ exit_code.stderr, exit_code.stdout });
 }
