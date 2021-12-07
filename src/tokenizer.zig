@@ -7,7 +7,7 @@ const TokenKind = enum {
     TK_EOF, // End-of-file markers
 };
 
-const Token = struct {
+pub const Token = struct {
     kind: TokenKind, // Token kind
     value: u64, // If kind is TK_NUM, its value
     lexeme: []const u8, // Token lexeme
@@ -28,7 +28,7 @@ const Error = error{
     InvalidToken,
 };
 
-pub fn init(allocator: *std.mem.Allocator, input_stream: []const u8) Tokenizer {
+pub fn init(allocator: std.mem.Allocator, input_stream: []const u8) Tokenizer {
     return Tokenizer{
         .tokens = std.ArrayList(Token).init(allocator),
         .items_position = 0,
@@ -38,16 +38,10 @@ pub fn init(allocator: *std.mem.Allocator, input_stream: []const u8) Tokenizer {
 
 // Create a new token.
 fn addToken(self: *Tokenizer, token: Token) !void {
-    try self.tokens.append(.{
-        .kind = token.kind,
-        .value = token.value,
-        .lexeme = token.lexeme,
-        .lenght = token.lenght,
-        .location = token.location,
-    });
+    try self.tokens.append(token);
 }
 
-pub fn reportError(self: Tokenizer, comptime msg: []const u8, args: anytype) void {
+pub fn reportError(self: *const Tokenizer, comptime msg: []const u8, args: anytype) void {
     const token = self.currentToken();
     std.log.err("Invalid Token '{c}' in '{s}' at {d}", .{
         @intCast(u8, token.value),
@@ -94,7 +88,7 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
             try self.addToken(Token{
                 .kind = .TK_NUM,
                 .value = digits,
-                .lexeme = try fmt.allocPrint(self.tokens.allocator, "{d}", .{value}),
+                .lexeme = try fmt.allocPrint(self.tokens.allocator, "{d}", .{digits}),
                 .lenght = (digit_index - current_index),
                 .location = current_index,
             });
@@ -139,23 +133,17 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
         .lenght = 0,
         .location = index,
     });
-    return self.*.currentToken();
+    return self.currentToken();
 }
 
 // Consumes the current token if it matches `operand`.
-fn equal(token: Token, terminal: []const u8) bool {
-    if (token.kind == .TK_NUM) {
-        const digits = fmt.parseInt(u32, terminal, 10) catch |err| undefined_value: {
-            std.log.err("{s}:cannot convert {s} to decimal digit", .{ @errorName(err), terminal });
-            break :undefined_value undefined;
-        };
-        return if (token.value == digits) true else false;
-    }
+pub fn isCurrentTokenEqualTo(self: *const Tokenizer, terminal: []const u8) bool {
+    const token = self.currentToken();
     return std.mem.eql(u8, token.lexeme, terminal);
 }
 
 //look at current token
-fn currentToken(self: Tokenizer) *const Token {
+pub fn currentToken(self: *const Tokenizer) *const Token {
     return &self.tokens.items[self.items_position];
 }
 
@@ -165,15 +153,17 @@ pub fn nextToken(self: *Tokenizer) *const Token {
     return &self.tokens.items[self.items_position];
 }
 
-// Ensure that the current terminal token matches the peek
-pub fn match(self: *Tokenizer, token: Token, terminal: []const u8) ?*const Token {
-    if (equal(token, terminal)) {
-        return self.nextToken();
+///Ensure that the current terminal token matches the peek
+///and move to the next token is it indeed matches
+pub fn isCurrentTokenMatch(self: *Tokenizer, terminal: []const u8) bool {
+    if (self.isCurrentTokenEqualTo(terminal)) {
+        _ = self.nextToken();
+        return true;
     }
-    return null;
+    return false;
 }
 
-pub fn getNumber(self: Tokenizer) Error!u64 {
+pub fn getNumber(self: *const Tokenizer) Error!u64 {
     if (currentToken(self).kind == .TK_NUM) {
         return currentToken(self).value;
     } else {
