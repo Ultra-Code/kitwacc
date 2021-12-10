@@ -66,11 +66,22 @@ pub fn asmEpilogue(self: *CodeGenerator) Error!void {
 }
 
 pub fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
+    //since these nodes are terminal nodes there are no other nodes on either sides of the tree
+    //so we must return after generating code for them. These serve as the terminating condition
+    //of the recursive descent
     if (node.kind == .NK_NUM) {
         try self.output_writer.print("{[spaces]s:>[width]}mov ${[immediate_constant]d},%rax\n", .{
             .spaces = space,
             .width = space_width,
             .immediate_constant = node.value,
+        });
+        return;
+    }
+    if (node.kind == .NK_NEG) {
+        try self.generateAsm(node.rhs.?);
+        try self.output_writer.print("{[spaces]s:>[width]}neg %rax\n", .{
+            .spaces = space,
+            .width = space_width,
         });
         return;
     }
@@ -103,7 +114,7 @@ pub fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
             });
         },
         else => {
-            std.log.err("invalid expression", .{});
+            std.log.err("invalid ast expression", .{});
             return error.InvalidExpression;
         },
     }
