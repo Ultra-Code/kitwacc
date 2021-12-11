@@ -43,10 +43,19 @@ fn pop(self: *CodeGenerator, register: []const u8) Error!void {
     self.stack_depth -= 1;
 }
 
-pub fn codegen(self: *CodeGenerator, node: *const Node) Error!void {
+pub fn codegen(self: *CodeGenerator, nodes: []*const Node) Error!void {
     try self.asmPrologue();
-    try self.generateAsm(node);
+    for (nodes) |node| {
+        try self.genStmts(node);
+    }
     try self.asmEpilogue();
+}
+fn genStmts(self: *CodeGenerator, node: *const Node) Error!void {
+    if (node.kind == .NK_EXPR_STMT) {
+        try self.generateAsm(node.lhs.?);
+        return;
+    }
+    std.log.err("invalid expression statement", .{});
 }
 
 fn asmPrologue(self: *CodeGenerator) Error!void {
@@ -85,7 +94,8 @@ fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
         return;
     }
     if (node.kind == .NK_NEG) {
-        try self.generateAsm(node.rhs.?);
+        //recurse on the side of the tree were the nodes are
+        try self.generateAsm(node.lhs.?);
         try self.output_writer.print("{[spaces]s:>[width]}neg %rax\n", .{
             .spaces = space,
             .width = space_width,

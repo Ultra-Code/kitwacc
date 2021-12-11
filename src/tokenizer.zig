@@ -144,7 +144,7 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
             continue;
         }
 
-        const bad_token = try fmt.allocPrint(self.tokens.allocator, "{s}", .{&[_]u8{value}});
+        const bad_token = &[_]u8{value};
         self.reportTokenizerError(bad_token, "expected number or punctuation but found {s}", .{bad_token});
         return error.InvalidToken;
     }

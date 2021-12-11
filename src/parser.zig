@@ -17,6 +17,7 @@ const AstNodeKind = enum {
     NK_GT, // >
     NK_LE, // <=
     NK_GE, // >=
+    NK_EXPR_STMT, // Expression statement
 };
 
 const Error = error{
@@ -66,10 +67,10 @@ const AstTree = struct {
         return num_terminal_node;
     }
 
-    pub fn unaryExpression(self: *AstTree, Kind: AstNodeKind, expr: *const Node) *const Node {
+    pub fn unaryExpression(self: *AstTree, Kind: AstNodeKind, unary_expr: *const Node) *const Node {
         var unary_node = self.createAstNode(Kind);
-        unary_node.rhs = expr;
-        unary_node.lhs = undefined;
+        unary_node.rhs = undefined;
+        unary_node.lhs = unary_expr;
         unary_node.value = undefined;
         return unary_node;
     }
@@ -77,68 +78,49 @@ const AstTree = struct {
 
 nodes: AstTree,
 tokenizer: Tokenizer,
+statements: std.ArrayList(*const AstNode),
 items_position: usize = 0,
 
 pub fn init(allocator: std.mem.Allocator, input_token_stream: []const u8) Parser {
     return .{
         .nodes = AstTree.init(allocator),
         .tokenizer = Tokenizer.init(allocator, input_token_stream),
+        .statements = std.ArrayList(*const AstNode).init(allocator),
     };
 }
 
 pub fn tokenizeInput(self: *Parser) !*const Token {
     return try self.tokenizer.tokenize();
 }
-
-pub fn reportParserError(self: *const Parser, comptime msg: []const u8, args: anytype) noreturn {
-    const token = self.currentToken();
-    std.log.err("Invalid Parse Token '{s}' in '{s}' at {d}", .{
-        token.lexeme,
-        self.tokenizer.stream,
-        token.location,
-    });
-    const location_offset = 34;
-    const token_location = token.location + token.lexeme.len + location_offset;
-    //add empty spaces till the character where the error starts
-    std.debug.print("{[spaces]s:>[width]}", .{ .spaces = " ", .width = token_location });
-    const format_msg = "^ " ++ msg ++ "\n";
-    std.debug.print(format_msg, args);
-    std.process.exit(3);
-}
-// Consumes the current token if it matches `operand`.
-pub fn isCurrentTokenEqualTo(self: *const Parser, terminal: []const u8) bool {
-    const token = self.currentToken();
-    return std.mem.eql(u8, token.lexeme, terminal);
-}
-
-//look at current token
-pub fn currentToken(self: *const Parser) *const Token {
-    return &self.tokenizer.tokens.items[self.items_position];
-}
-
-//consume next token in the input stream
-pub fn nextToken(self: *Parser) *const Token {
-    self.items_position += 1;
-    return &self.tokenizer.tokens.items[self.items_position];
-}
-
-//look at the previous token usually useful when dealing with errors
-pub fn previousToken(self: *const Parser) *const Token {
-    return &self.tokenizer.tokens.items[self.items_position - 1];
-}
-
-///Ensure that the current terminal token matches the peek
-///and move to the next token is it indeed matches
-pub fn isCurrentTokenMatch(self: *Parser, terminal: []const u8) bool {
-    if (self.isCurrentTokenEqualTo(terminal)) {
-        _ = self.nextToken();
-        return true;
+//program = stmt
+pub fn parse(self: *Parser, token: *const Token) []*const AstNode {
+    // NOTE: This can be replaced by a singly linked list of AstNode
+    while (self.currentToken().kind != .TK_EOF) {
+        self.statements.append(self.stmt(token)) catch |OOM| {
+            std.log.err("Error {s}", .{@errorName(OOM)});
+            std.debug.panic("Allocator Out Of Memory", .{});
+            std.process.exit(3);
+        };
     }
-    return false;
+    return self.statements.items;
+}
+
+// stmt = expr_stmt
+fn stmt(self: *Parser, token: *const Token) *const AstNode {
+    return self.expr_stmt(token);
+}
+
+// expr_stmt = expr ";"
+fn expr_stmt(self: *Parser, token: *const Token) *const AstNode {
+    const expr_stmt_node = self.nodes.unaryExpression(.NK_EXPR_STMT, self.expr(token));
+    if (self.expectCurrentTokenToMatch(";")) {} else {
+        self.reportParserError("expected statement to end with ';' but found {s}", .{self.currentToken().lexeme});
+    }
+    return expr_stmt_node;
 }
 
 // expr = equality
-pub fn parse(self: *Parser, token: *const Token) *const AstNode {
+fn expr(self: *Parser, token: *const Token) *const AstNode {
     return self.equality(token);
 }
 
@@ -256,8 +238,8 @@ fn unary(self: *Parser, token: *const Token) *const AstNode {
 // primary = "(" expr ")" | NUM
 fn primary(self: *Parser, token: *const Token) !*const AstNode {
     if (self.isCurrentTokenEqualTo("(")) {
-        const expr_node = self.parse(self.nextToken());
-        if (self.isCurrentTokenMatch(")")) {} else {
+        const expr_node = self.expr(self.nextToken());
+        if (self.expectCurrentTokenToMatch(")")) {} else {
             self.reportParserError("expected token to be ) but found {s}", .{self.currentToken().lexeme});
             return error.TerminalMismatch;
         }
@@ -270,4 +252,54 @@ fn primary(self: *Parser, token: *const Token) !*const AstNode {
     }
     self.reportParserError("Expected an expression , terminal  or number", .{});
     return error.InvalidExpression;
+}
+
+pub fn reportParserError(self: *const Parser, comptime msg: []const u8, args: anytype) noreturn {
+    const token = self.currentToken();
+    std.log.err("Invalid Parse Token '{s}' in '{s}' at {d}", .{
+        token.lexeme,
+        self.tokenizer.stream,
+        token.location,
+    });
+    const location_offset = 34;
+    const token_location = token.location + token.lexeme.len + location_offset;
+    //add empty spaces till the character where the error starts
+    std.debug.print("{[spaces]s:>[width]}", .{ .spaces = " ", .width = token_location });
+    const format_msg = "^ " ++ msg ++ "\n";
+    std.debug.print(format_msg, args);
+    std.process.exit(3);
+}
+// Consumes the current token if it matches `operand`.
+fn isCurrentTokenEqualTo(self: *const Parser, terminal: []const u8) bool {
+    const token = self.currentToken();
+    return std.mem.eql(u8, token.lexeme, terminal);
+}
+
+//look at current token
+pub fn currentToken(self: *const Parser) *const Token {
+    return &self.tokenizer.tokens.items[self.items_position];
+}
+
+//consume next token in the input stream
+fn nextToken(self: *Parser) *const Token {
+    self.items_position += 1;
+    return &self.tokenizer.tokens.items[self.items_position];
+}
+
+//look at the previous token usually useful when dealing with errors
+pub fn previousToken(self: *const Parser) *const Token {
+    if (self.items_position - 1 < 0) {
+        return &self.tokenizer.tokens.items[self.items_position - 1];
+    }
+    return &self.tokenizer.tokens.items[0];
+}
+
+///Ensure that the current terminal token matches the peek
+///and move to the next token is it indeed matches
+fn expectCurrentTokenToMatch(self: *Parser, terminal: []const u8) bool {
+    if (self.isCurrentTokenEqualTo(terminal)) {
+        _ = self.nextToken();
+        return true;
+    }
+    return false;
 }
