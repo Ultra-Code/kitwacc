@@ -41,7 +41,7 @@ fn addToken(self: *Tokenizer, token: Token) !void {
     try self.tokens.append(token);
 }
 
-pub fn reportError(self: *const Tokenizer, comptime msg: []const u8, args: anytype) void {
+pub fn reportError(self: *const Tokenizer, comptime msg: []const u8, args: anytype) noreturn {
     const token = self.currentToken();
     std.log.err("Invalid Token '{c}' in '{s}' at {d}", .{
         @intCast(u8, token.value),
@@ -54,7 +54,17 @@ pub fn reportError(self: *const Tokenizer, comptime msg: []const u8, args: anyty
     std.debug.print("{[spaces]s:>[width]}", .{ .spaces = " ", .width = token_location });
     const format_msg = "^ " ++ msg ++ "\n";
     std.debug.print(format_msg, args);
-    std.process.exit(1);
+    std.process.exit(2);
+}
+
+fn isPunct(self: *Tokenizer, punct: []const u8) bool {
+    if (std.mem.eql(u8, punct, "==") or std.mem.eql(u8, punct, "<=") or std.mem.eql(u8, punct, ">=") or
+        std.mem.eql(u8, punct, "!="))
+    {
+        return true;
+    }
+    self.reportError("expected == or <= or >= or != but found {s}", .{punct});
+    return false;
 }
 
 // Tokenize `peek` and returns new tokens.
@@ -103,13 +113,36 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
 
         // Operator
         if (std.ascii.isPunct(value)) {
+            const current_index = index;
+            const current_punct = value;
+            //check if == != <= or >=
+            if (current_index + 1 < peek.len) {
+                if (std.ascii.isPunct(peek[current_index + 1])) {
+                    const next_punct = peek[current_index + 1];
+                    var buf: [2]u8 = undefined;
+                    const operator = try std.fmt.bufPrint(&buf, "{c}{c}", .{ current_punct, next_punct });
+                    if (self.isPunct(operator)) {
+                        index = current_index + 1;
+                        try self.addToken(Token{
+                            .kind = .TK_PUNCT,
+                            .value = value,
+                            .lexeme = try fmt.allocPrint(self.tokens.allocator, "{s}", .{operator}),
+                            .lenght = operator.len,
+                            .location = index,
+                        });
+                        continue;
+                    }
+                }
+            }
+
             try self.addToken(Token{
                 .kind = .TK_PUNCT,
                 .value = value,
-                .lexeme = try fmt.allocPrint(self.tokens.allocator, "{c}", .{value}),
+                .lexeme = try fmt.allocPrint(self.tokens.allocator, "{c}", .{current_punct}),
                 .lenght = 1,
                 .location = index,
             });
+
             continue;
         }
 
