@@ -113,8 +113,50 @@ pub fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
                 .width = space_width,
             });
         },
+        .NK_EQ, .NK_NE, .NK_LT, .NK_LE, .NK_GE, .NK_GT => {
+            try self.output_writer.print("{[spaces]s:>[width]}cmp %rdi,%rax\n", .{
+                .spaces = space,
+                .width = space_width,
+            });
+            if (node.kind == .NK_EQ) {
+                try self.output_writer.print("{[spaces]s:>[width]}sete %al\n", .{
+                    .spaces = space,
+                    .width = space_width,
+                });
+            } else if (node.kind == .NK_NE) {
+                try self.output_writer.print("{[spaces]s:>[width]}setne %al\n", .{
+                    .spaces = space,
+                    .width = space_width,
+                });
+            } else if (node.kind == .NK_LT) {
+                try self.output_writer.print("{[spaces]s:>[width]}setl %al\n", .{
+                    .spaces = space,
+                    .width = space_width,
+                });
+            } else if (node.kind == .NK_LE) {
+                try self.output_writer.print("{[spaces]s:>[width]}setle %al\n", .{
+                    .spaces = space,
+                    .width = space_width,
+                });
+            } else if (node.kind == .NK_GE) {
+                try self.output_writer.print("{[spaces]s:>[width]}setge %al\n", .{
+                    .spaces = space,
+                    .width = space_width,
+                });
+            } else if (node.kind == .NK_GT) {
+                try self.output_writer.print("{[spaces]s:>[width]}setg %al\n", .{
+                    .spaces = space,
+                    .width = space_width,
+                });
+            }
+
+            try self.output_writer.print("{[spaces]s:>[width]}movzb %al,%rax\n", .{
+                .spaces = space,
+                .width = space_width,
+            });
+        },
         else => {
-            std.log.err("invalid ast expression", .{});
+            std.log.err("invalid ast node expression", .{});
             return error.InvalidExpression;
         },
     }

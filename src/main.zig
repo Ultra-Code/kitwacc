@@ -43,7 +43,7 @@ fn compileExpressions(allocator: std.mem.Allocator, stream: []const u8) !void {
     var Parser = parser.init(allocator, stream);
     // Tokenize and parse.
     const token = try Parser.tokenizeInput();
-    const ast_node = try Parser.parseExpression(token);
+    const ast_node = Parser.parse(token);
 
     if (Parser.tokenizer.currentToken().kind == .TK_EOF) {
         var generator = try code_generator.init("test/output.s");
