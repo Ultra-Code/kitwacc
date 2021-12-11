@@ -58,9 +58,8 @@ fn compiler(allocator: std.mem.Allocator, stream: []const u8) !void {
 }
 
 test "compileInt test" {
-    var buffer: [10240]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
-    var fixed_allocator = fba.allocator();
-    const exit_code = try std.ChildProcess.exec(.{ .allocator = fixed_allocator, .argv = &[_][]const u8{"./test/test-compiler"} });
+    const exit_code = try std.ChildProcess.exec(.{ .allocator = std.testing.allocator, .argv = &[_][]const u8{"./test/test-compiler"} });
     std.debug.print("{s}\n{s}", .{ exit_code.stderr, exit_code.stdout });
+    std.testing.allocator.free(exit_code.stdout);
+    std.testing.allocator.free(exit_code.stderr);
 }
