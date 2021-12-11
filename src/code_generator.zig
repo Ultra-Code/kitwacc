@@ -4,6 +4,14 @@ const Node = parser.AstNode;
 const Parser = parser.Parser;
 
 const CodeGenerator = @This();
+
+const Error = error{
+    InvalidExpression,
+} || std.os.WriteError;
+
+const space_width = 8;
+const space = " ";
+
 stack_depth: u32,
 output_file: std.fs.File,
 output_writer: std.fs.File.Writer = undefined,
@@ -17,13 +25,6 @@ pub fn deinit(self: *CodeGenerator) void {
     self.output_file.close();
     std.debug.assert(self.stack_depth == 0);
 }
-
-const space_width = 8;
-const space = " ";
-
-const Error = error{
-    InvalidExpression,
-} || std.os.WriteError;
 
 fn push(self: *CodeGenerator) Error!void {
     try self.output_writer.print("{[spaces]s:>[width]}push %rax\n", .{
@@ -42,7 +43,13 @@ fn pop(self: *CodeGenerator, register: []const u8) Error!void {
     self.stack_depth -= 1;
 }
 
-pub fn asmPrologue(self: *CodeGenerator) Error!void {
+pub fn codegen(self: *CodeGenerator, node: *const Node) Error!void {
+    try self.asmPrologue();
+    try self.generateAsm(node);
+    try self.asmEpilogue();
+}
+
+fn asmPrologue(self: *CodeGenerator) Error!void {
     try self.output_writer.print(
         \\{[spaces]s:>[width]}.globl main
         \\{[spaces]s:>[width]}.type  main, @function
@@ -54,7 +61,7 @@ pub fn asmPrologue(self: *CodeGenerator) Error!void {
     });
 }
 
-pub fn asmEpilogue(self: *CodeGenerator) Error!void {
+fn asmEpilogue(self: *CodeGenerator) Error!void {
     try self.output_writer.print(
         \\
         \\{[spaces]s:>[width]}ret
@@ -65,7 +72,7 @@ pub fn asmEpilogue(self: *CodeGenerator) Error!void {
     });
 }
 
-pub fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
+fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
     //since these nodes are terminal nodes there are no other nodes on either sides of the tree
     //so we must return after generating code for them. These serve as the terminating condition
     //of the recursive descent

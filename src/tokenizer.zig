@@ -17,21 +17,19 @@ pub const Token = struct {
 
 const Tokenizer = @This();
 
-tokens: std.ArrayList(Token), // Next token
-//The -1 sentinal represent the end or that no element is requested
-items_position: usize,
-stream: []const u8,
-
 const Error = error{
     TerminalMismatch,
     TokenNotANumber,
     InvalidToken,
 };
 
+tokens: std.ArrayList(Token), // Next token
+stream: []const u8,
+position_in_stream: usize = 0,
+
 pub fn init(allocator: std.mem.Allocator, input_stream: []const u8) Tokenizer {
     return Tokenizer{
         .tokens = std.ArrayList(Token).init(allocator),
-        .items_position = 0,
         .stream = input_stream,
     };
 }
@@ -41,17 +39,14 @@ fn addToken(self: *Tokenizer, token: Token) !void {
     try self.tokens.append(token);
 }
 
-pub fn reportError(self: *const Tokenizer, comptime msg: []const u8, args: anytype) noreturn {
-    const token = self.currentToken();
-    std.log.err("Invalid Token '{c}' in '{s}' at {d}", .{
-        @intCast(u8, token.value),
-        self.stream,
-        token.location,
-    });
-    const location_offset = 29;
-    const token_location = token.location + location_offset;
-    //add empty spaces till the character where the error starts
-    std.debug.print("{[spaces]s:>[width]}", .{ .spaces = " ", .width = token_location });
+pub fn reportTokenizerError(self: *const Tokenizer, error_slice: []const u8, comptime msg: []const u8, args: anytype) noreturn {
+    const token_index = std.mem.indexOf(u8, self.stream, error_slice).?;
+    const error_fmt = "Error: Invalid Token '{s}' in '{s} at {d}\n";
+    const position_of_stream_in_error_fmt = 28;
+    const error_token_start_location = error_slice.len + position_of_stream_in_error_fmt;
+    const actual_location = error_token_start_location + token_index;
+    std.debug.print(error_fmt, .{ error_slice, self.stream, token_index });
+    std.debug.print("{[spaces]s:>[width]}", .{ .spaces = " ", .width = actual_location });
     const format_msg = "^ " ++ msg ++ "\n";
     std.debug.print(format_msg, args);
     std.process.exit(2);
@@ -63,7 +58,7 @@ fn isPunct(self: *Tokenizer, punct: []const u8) bool {
     {
         return true;
     }
-    self.reportError("expected == or <= or >= or != but found {s}", .{punct});
+    self.reportTokenizerError(punct, "expected == or <= or >= or != but found {s}", .{punct});
     return false;
 }
 
@@ -72,7 +67,10 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
     const peek = self.stream;
     var index: usize = 0;
     //condition to prevent out of bound index but allow procession of last token
-    while (index < peek.len) : (index += 1) {
+    while (index < peek.len) : ({
+        index += 1;
+        self.position_in_stream = index;
+    }) {
         const value = peek[index];
         // Numeric literal
         if (std.ascii.isDigit(value)) {
@@ -128,7 +126,7 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
                             .value = value,
                             .lexeme = try fmt.allocPrint(self.tokens.allocator, "{s}", .{operator}),
                             .lenght = operator.len,
-                            .location = index,
+                            .location = current_index,
                         });
                         continue;
                     }
@@ -146,16 +144,8 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
             continue;
         }
 
-        try self.addToken(Token{
-            .kind = .TK_EOF,
-            .value = value,
-            .lexeme = "INVALID TOKEN",
-            .lenght = 0,
-            .location = index,
-        });
-        //set current items_position to the last
-        self.items_position = self.tokens.items.len - 1;
-        self.reportError("expected number or + or -", .{});
+        const bad_token = try fmt.allocPrint(self.tokens.allocator, "{s}", .{&[_]u8{value}});
+        self.reportTokenizerError(bad_token, "expected number or punctuation but found {s}", .{bad_token});
         return error.InvalidToken;
     }
 
@@ -166,41 +156,5 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
         .lenght = 0,
         .location = index,
     });
-    return self.currentToken();
-}
-
-// Consumes the current token if it matches `operand`.
-pub fn isCurrentTokenEqualTo(self: *const Tokenizer, terminal: []const u8) bool {
-    const token = self.currentToken();
-    return std.mem.eql(u8, token.lexeme, terminal);
-}
-
-//look at current token
-pub fn currentToken(self: *const Tokenizer) *const Token {
-    return &self.tokens.items[self.items_position];
-}
-
-//consume next token in the input stream
-pub fn nextToken(self: *Tokenizer) *const Token {
-    self.items_position += 1;
-    return &self.tokens.items[self.items_position];
-}
-
-///Ensure that the current terminal token matches the peek
-///and move to the next token is it indeed matches
-pub fn isCurrentTokenMatch(self: *Tokenizer, terminal: []const u8) bool {
-    if (self.isCurrentTokenEqualTo(terminal)) {
-        _ = self.nextToken();
-        return true;
-    }
-    return false;
-}
-
-pub fn getNumber(self: *const Tokenizer) Error!u64 {
-    if (currentToken(self).kind == .TK_NUM) {
-        return currentToken(self).value;
-    } else {
-        self.reportError("expected a number", .{});
-        return error.TokenNotANumber;
-    }
+    return &self.tokens.items[0];
 }

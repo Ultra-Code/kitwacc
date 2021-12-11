@@ -19,6 +19,13 @@ const AstNodeKind = enum {
     NK_GE, // >=
 };
 
+const Error = error{
+    InvalidExpression,
+    TerminalMismatch,
+} || std.os.WriteError || std.mem.Allocator.Error;
+
+pub const AstNode = AstTree.Node;
+
 const AstTree = struct {
 
     // AST node type
@@ -68,10 +75,9 @@ const AstTree = struct {
     }
 };
 
-pub const AstNode = AstTree.Node;
-
 nodes: AstTree,
 tokenizer: Tokenizer,
+items_position: usize = 0,
 
 pub fn init(allocator: std.mem.Allocator, input_token_stream: []const u8) Parser {
     return .{
@@ -79,13 +85,56 @@ pub fn init(allocator: std.mem.Allocator, input_token_stream: []const u8) Parser
         .tokenizer = Tokenizer.init(allocator, input_token_stream),
     };
 }
-const Error = error{
-    InvalidExpression,
-    TerminalMismatch,
-} || std.os.WriteError || std.mem.Allocator.Error;
 
 pub fn tokenizeInput(self: *Parser) !*const Token {
     return try self.tokenizer.tokenize();
+}
+
+pub fn reportParserError(self: *const Parser, comptime msg: []const u8, args: anytype) noreturn {
+    const token = self.currentToken();
+    std.log.err("Invalid Parse Token '{s}' in '{s}' at {d}", .{
+        token.lexeme,
+        self.tokenizer.stream,
+        token.location,
+    });
+    const location_offset = 34;
+    const token_location = token.location + token.lexeme.len + location_offset;
+    //add empty spaces till the character where the error starts
+    std.debug.print("{[spaces]s:>[width]}", .{ .spaces = " ", .width = token_location });
+    const format_msg = "^ " ++ msg ++ "\n";
+    std.debug.print(format_msg, args);
+    std.process.exit(3);
+}
+// Consumes the current token if it matches `operand`.
+pub fn isCurrentTokenEqualTo(self: *const Parser, terminal: []const u8) bool {
+    const token = self.currentToken();
+    return std.mem.eql(u8, token.lexeme, terminal);
+}
+
+//look at current token
+pub fn currentToken(self: *const Parser) *const Token {
+    return &self.tokenizer.tokens.items[self.items_position];
+}
+
+//consume next token in the input stream
+pub fn nextToken(self: *Parser) *const Token {
+    self.items_position += 1;
+    return &self.tokenizer.tokens.items[self.items_position];
+}
+
+//look at the previous token usually useful when dealing with errors
+pub fn previousToken(self: *const Parser) *const Token {
+    return &self.tokenizer.tokens.items[self.items_position - 1];
+}
+
+///Ensure that the current terminal token matches the peek
+///and move to the next token is it indeed matches
+pub fn isCurrentTokenMatch(self: *Parser, terminal: []const u8) bool {
+    if (self.isCurrentTokenEqualTo(terminal)) {
+        _ = self.nextToken();
+        return true;
+    }
+    return false;
 }
 
 // expr = equality
@@ -99,13 +148,13 @@ fn equality(self: *Parser, token: *const Token) *const AstNode {
     var equality_tree_node = equality_lhs_node;
 
     while (true) {
-        if (self.tokenizer.isCurrentTokenEqualTo("==")) {
-            const equality_rhs_node = self.relational(self.tokenizer.nextToken());
+        if (self.isCurrentTokenEqualTo("==")) {
+            const equality_rhs_node = self.relational(self.nextToken());
             equality_tree_node = self.nodes.binaryExpression(.NK_EQ, equality_lhs_node, equality_rhs_node);
             continue;
         }
-        if (self.tokenizer.isCurrentTokenEqualTo("!=")) {
-            const equality_rhs_node = self.relational(self.tokenizer.nextToken());
+        if (self.isCurrentTokenEqualTo("!=")) {
+            const equality_rhs_node = self.relational(self.nextToken());
             equality_tree_node = self.nodes.binaryExpression(.NK_NE, equality_lhs_node, equality_rhs_node);
             continue;
         }
@@ -119,23 +168,23 @@ fn relational(self: *Parser, token: *const Token) *const AstNode {
     var relational_tree_node = relational_lhs_node;
 
     while (true) {
-        if (self.tokenizer.isCurrentTokenEqualTo("<")) {
-            const relational_rhs_node = self.add(self.tokenizer.nextToken());
+        if (self.isCurrentTokenEqualTo("<")) {
+            const relational_rhs_node = self.add(self.nextToken());
             relational_tree_node = self.nodes.binaryExpression(.NK_LT, relational_lhs_node, relational_rhs_node);
             continue;
         }
-        if (self.tokenizer.isCurrentTokenEqualTo("<=")) {
-            const relational_rhs_node = self.add(self.tokenizer.nextToken());
+        if (self.isCurrentTokenEqualTo("<=")) {
+            const relational_rhs_node = self.add(self.nextToken());
             relational_tree_node = self.nodes.binaryExpression(.NK_LE, relational_lhs_node, relational_rhs_node);
             continue;
         }
-        if (self.tokenizer.isCurrentTokenEqualTo(">")) {
-            const relational_rhs_node = self.add(self.tokenizer.nextToken());
+        if (self.isCurrentTokenEqualTo(">")) {
+            const relational_rhs_node = self.add(self.nextToken());
             relational_tree_node = self.nodes.binaryExpression(.NK_GT, relational_lhs_node, relational_rhs_node);
             continue;
         }
-        if (self.tokenizer.isCurrentTokenEqualTo(">=")) {
-            const relational_rhs_node = self.add(self.tokenizer.nextToken());
+        if (self.isCurrentTokenEqualTo(">=")) {
+            const relational_rhs_node = self.add(self.nextToken());
             relational_tree_node = self.nodes.binaryExpression(.NK_GE, relational_lhs_node, relational_rhs_node);
             continue;
         }
@@ -147,14 +196,14 @@ pub fn add(self: *Parser, token: *const Token) *const AstNode {
     const lhs_node = self.mul(token);
     var next_lhs_node = lhs_node;
     while (true) {
-        if (self.tokenizer.isCurrentTokenEqualTo("+")) {
-            const rhs_node = self.mul(self.tokenizer.nextToken());
+        if (self.isCurrentTokenEqualTo("+")) {
+            const rhs_node = self.mul(self.nextToken());
             next_lhs_node = self.nodes.binaryExpression(.NK_ADD, next_lhs_node, rhs_node);
             continue;
         }
 
-        if (self.tokenizer.isCurrentTokenEqualTo("-")) {
-            const rhs_node = self.mul(self.tokenizer.nextToken());
+        if (self.isCurrentTokenEqualTo("-")) {
+            const rhs_node = self.mul(self.nextToken());
             next_lhs_node = self.nodes.binaryExpression(.NK_SUB, next_lhs_node, rhs_node);
             continue;
         }
@@ -167,14 +216,14 @@ fn mul(self: *Parser, token: *const Token) *const AstNode {
     const lhs_node = self.unary(token);
     var next_lhs_node = lhs_node;
     while (true) {
-        if (self.tokenizer.isCurrentTokenEqualTo("*")) {
-            const rhs_node = self.unary(self.tokenizer.nextToken());
+        if (self.isCurrentTokenEqualTo("*")) {
+            const rhs_node = self.unary(self.nextToken());
             next_lhs_node = self.nodes.binaryExpression(.NK_MUL, next_lhs_node, rhs_node);
             continue;
         }
 
-        if (self.tokenizer.isCurrentTokenEqualTo("/")) {
-            const rhs_node = self.unary(self.tokenizer.nextToken());
+        if (self.isCurrentTokenEqualTo("/")) {
+            const rhs_node = self.unary(self.nextToken());
             next_lhs_node = self.nodes.binaryExpression(.NK_DIV, next_lhs_node, rhs_node);
             continue;
         }
@@ -185,42 +234,40 @@ fn mul(self: *Parser, token: *const Token) *const AstNode {
 
 // unary = ('+'|'-') unary | primary
 fn unary(self: *Parser, token: *const Token) *const AstNode {
-    if (self.tokenizer.isCurrentTokenEqualTo("+")) {
-        return self.unary(self.tokenizer.nextToken());
+    if (self.isCurrentTokenEqualTo("+")) {
+        return self.unary(self.nextToken());
     }
 
-    if (self.tokenizer.isCurrentTokenEqualTo("-")) {
-        return self.nodes.unaryExpression(.NK_NEG, self.unary(self.tokenizer.nextToken()));
+    if (self.isCurrentTokenEqualTo("-")) {
+        return self.nodes.unaryExpression(.NK_NEG, self.unary(self.nextToken()));
     }
     _ = token;
 
-    return self.primary(self.tokenizer.currentToken()) catch |err| switch (err) {
+    return self.primary(self.currentToken()) catch |err| switch (err) {
         error.InvalidExpression => {
-            std.log.err("{s} :Invalid primary expression", .{@errorName(err)});
-            std.process.exit(1);
+            self.reportParserError("{s} :Invalid primary expression", .{@errorName(err)});
         },
         error.TerminalMismatch => {
-            std.log.err("{s} : Terminals ( must end with a corresponding )", .{@errorName(err)});
-            std.process.exit(1);
+            self.reportParserError("{s} : Terminals ( must end with a corresponding )", .{@errorName(err)});
         },
     };
 }
 
 // primary = "(" expr ")" | NUM
 fn primary(self: *Parser, token: *const Token) !*const AstNode {
-    if (self.tokenizer.isCurrentTokenEqualTo("(")) {
-        const expr_node = self.parse(self.tokenizer.nextToken());
-        if (self.tokenizer.isCurrentTokenMatch(")")) {} else {
-            self.tokenizer.reportError("expected token to be ) but found {s}", .{self.tokenizer.currentToken().lexeme});
+    if (self.isCurrentTokenEqualTo("(")) {
+        const expr_node = self.parse(self.nextToken());
+        if (self.isCurrentTokenMatch(")")) {} else {
+            self.reportParserError("expected token to be ) but found {s}", .{self.currentToken().lexeme});
             return error.TerminalMismatch;
         }
         return expr_node;
     }
     if (token.kind == .TK_NUM) {
         const num_node = self.nodes.number(token.value);
-        _ = self.tokenizer.nextToken();
+        _ = self.nextToken();
         return num_node;
     }
-    self.tokenizer.reportError("Expected an expression", .{});
+    self.reportParserError("Expected an expression , terminal  or number", .{});
     return error.InvalidExpression;
 }

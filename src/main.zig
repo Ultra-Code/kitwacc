@@ -17,13 +17,12 @@ pub fn main() !void {
 
     const program_name = args.input[0];
     const stream = args.input[1];
-    std.log.info("argv is {s}", .{stream});
     if (args.input.len < 2) {
         std.log.err("{s} has invalid number of arguments.Expected 1 found 0", .{program_name});
         std.log.err("{s} call kitwacc with 1 argument", .{program_name});
         return error.InvalidNumberOfArguments;
     }
-    compileExpressions(allocator, stream) catch |err|
+    compiler(allocator, stream) catch |err|
         switch (err) {
         else => std.log.err("{s} error occured", .{@errorName(err)}),
     };
@@ -39,21 +38,22 @@ const TokenStream = struct {
     }
 };
 
-fn compileExpressions(allocator: std.mem.Allocator, stream: []const u8) !void {
+fn compiler(allocator: std.mem.Allocator, stream: []const u8) !void {
     var Parser = parser.init(allocator, stream);
     // Tokenize and parse.
     const token = try Parser.tokenizeInput();
     const ast_node = Parser.parse(token);
 
-    if (Parser.tokenizer.currentToken().kind == .TK_EOF) {
+    if (Parser.currentToken().kind == .TK_EOF) {
         var generator = try code_generator.init("test/output.s");
         defer generator.deinit();
-        try generator.asmPrologue();
         // Traverse the AST to emit assembly.
-        try generator.generateAsm(ast_node);
-        try generator.asmEpilogue();
+        try generator.codegen(ast_node);
     } else {
-        Parser.tokenizer.reportError("epected more tokens because current token isn't EOF", .{});
+        Parser.reportParserError("epected + - < <= > >= == != after {s} but found {s}", .{
+            Parser.previousToken().lexeme,
+            Parser.currentToken().lexeme,
+        });
     }
 }
 
