@@ -1,6 +1,7 @@
 const std = @import("std");
 const Tokenizer = @import("tokenizer.zig");
 const Token = Tokenizer.Token;
+const OOMhandler = Tokenizer.OOMhandler;
 
 pub const Parser = @This();
 
@@ -20,6 +21,7 @@ const AstNodeKind = enum {
     NK_EXPR_STMT, // Expression statement
     NK_ASSIGN, // =
     NK_VAR, // Variable
+    NK_RETURN, // return statement
 };
 
 pub const AstNode = AstTree.Node;
@@ -49,7 +51,6 @@ pub const AstTree = struct {
             identifier: *const Variable, // Used if node is an Identifier Token .ie kind == ND_VAR
         };
     };
-    const AstError = error{} || std.mem.Allocator.Error;
 
     allocator: std.mem.Allocator,
     // All local variable instances created during parsing are accumulated to this list.
@@ -64,10 +65,7 @@ pub const AstTree = struct {
     }
 
     fn createAstNode(self: *AstTree, kind: AstNodeKind) *Node {
-        var new_ast_node = self.allocator.create(Node) catch |err| {
-            std.log.err("{s} :allocator run out of memory", .{@errorName(err)});
-            std.debug.panic("Out of Memory condition", .{});
-        };
+        var new_ast_node = self.allocator.create(Node) catch OOMhandler();
         new_ast_node.kind = kind;
         return new_ast_node;
     }
@@ -114,7 +112,7 @@ pub const AstTree = struct {
     }
 
     pub fn createVariable(self: *AstTree, name: []const u8) *Variable {
-        var new_variable_identifier = self.allocator.create(Variable) catch unreachable;
+        var new_variable_identifier = self.allocator.create(Variable) catch OOMhandler();
         new_variable_identifier.name = name;
         new_variable_identifier.rbp_offset = offset: {
             if (self.findVariable(name)) |variable_exist| {
@@ -162,11 +160,7 @@ fn alignTo(num: usize, alignment: usize) usize {
 pub fn parse(self: *Parser, token: *const Token) Function {
     // NOTE: This can be replaced by a singly linked list of AstNode
     while (self.currentToken().kind != .TK_EOF) {
-        self.statements.append(self.stmt(token)) catch |OOM| {
-            std.log.err("Error {s}", .{@errorName(OOM)});
-            std.debug.panic("Allocator Out Of Memory", .{});
-            std.process.exit(3);
-        };
+        self.statements.append(self.stmt(token)) catch OOMhandler();
     }
     return .{
         .body = self.statements.items,
@@ -320,14 +314,12 @@ fn primary(self: *Parser, token: *const Token) *const AstNode {
         return expr_node;
     }
     if (token.kind == .TK_IDENT) {
-        var found_variable = self.nodes.findVariable(token.value.ident_name);
-        if (found_variable) |_| {
-            //if a variable of name token.value.ident_name already exist do nothing
-        } else {
-            found_variable = self.nodes.createVariable(token.value.ident_name);
-            self.nodes.local_variables.append(found_variable.?) catch |err| std.debug.panic("Error:{s}", .{@errorName(err)});
-        }
-        const identifier_node = self.nodes.variableAssignment(found_variable.?);
+        const variable = self.nodes.findVariable(token.value.ident_name) orelse new_variable: {
+            const new_identifier = self.nodes.createVariable(token.value.ident_name);
+            self.nodes.local_variables.append(new_identifier) catch OOMhandler();
+            break :new_variable new_identifier;
+        };
+        const identifier_node = self.nodes.variableAssignment(variable);
         _ = self.nextToken();
         return identifier_node;
     }
@@ -342,13 +334,15 @@ fn primary(self: *Parser, token: *const Token) *const AstNode {
 
 pub fn reportParserError(self: *const Parser, comptime msg: []const u8, args: anytype) noreturn {
     const token = self.currentToken();
-    std.log.err("\nInvalid Parse Token '{s}' in '{s}' at {d}", .{
-        token.value.ident_name,
-        self.tokenizer.stream,
-        token.location,
+    const error_msg = "\nInvalid Parse Token '{[token_name]s}' in '{[token_stream]s}' at {[token_location]d}";
+    const identifier_name = token.value.ident_name;
+    std.log.err(error_msg, .{
+        .token_name = identifier_name,
+        .token_stream = self.tokenizer.stream,
+        .token_location = token.location,
     });
-    const location_offset = 34;
-    const token_location = token.location + token.value.ident_name.len + location_offset;
+    const location_offset = 27;
+    const token_location = location_offset + identifier_name.len + token.location;
     //add empty spaces till the character where the error starts
     std.debug.print("{[spaces]s:>[width]}", .{ .spaces = " ", .width = token_location });
     const format_msg = "^ " ++ msg ++ "\n";

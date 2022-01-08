@@ -26,7 +26,13 @@ const Error = error{
     InvalidToken,
 };
 
-tokens: std.ArrayList(Token), // Next token
+pub fn OOMhandler() noreturn {
+    std.log.err("allocator has run out of memory", .{});
+    std.debug.panic("Out of Memory condition", .{});
+    std.process.exit(4);
+}
+
+tokens: std.ArrayList(Token), // List of tokens
 stream: []const u8,
 position_in_stream: usize = 0,
 
@@ -38,8 +44,8 @@ pub fn init(allocator: std.mem.Allocator, input_stream: []const u8) Tokenizer {
 }
 
 // Create a new token.
-fn addToken(self: *Tokenizer, token: Token) !void {
-    try self.tokens.append(token);
+fn addToken(self: *Tokenizer, token: Token) void {
+    self.tokens.append(token) catch OOMhandler();
 }
 
 pub fn reportTokenizerError(self: *const Tokenizer, error_slice: []const u8, comptime msg: []const u8, args: anytype) noreturn {
@@ -97,12 +103,13 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
             //since value is a digit we need to look pass the current index for addition digits in the stream
             var digit_index = current_index + 1;
             // convert ascii char to number
-            var digits = try fmt.charToDigit(value, 10);
+            const RADIX = 10;
+            var digits = fmt.charToDigit(value, RADIX) catch unreachable;
             //look from digit_index for additional digits
             for (peek[digit_index..]) |digit| {
                 if (std.ascii.isDigit(digit)) {
                     //convert multiple number characters into a single numeric value
-                    digits = digits * 10 + try fmt.charToDigit(digit, 10);
+                    digits = (digits * 10) + (fmt.charToDigit(digit, RADIX) catch unreachable);
                     digit_index += 1;
                     continue;
                 }
@@ -112,7 +119,7 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
             //-1 because our anticipated next digit token wasn't a digit
             const next_token_index = digit_index - 1;
             index = next_token_index;
-            try self.addToken(Token{
+            self.addToken(Token{
                 .kind = .TK_NUM,
                 .value = Token.Value{ .num_value = digits },
                 .location = current_index,
@@ -139,7 +146,7 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
                     const operator = try std.fmt.bufPrint(&buf, "{c}{c}", .{ current_punct, next_punct });
                     if (self.isPunct(operator)) {
                         index = current_index + 1;
-                        try self.addToken(Token{
+                        self.addToken(Token{
                             .kind = .TK_PUNCT,
                             .value = Token.Value{ .ident_name = try fmt.allocPrint(self.tokens.allocator, "{s}", .{operator}) },
                             .location = current_index,
@@ -149,7 +156,7 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
                 }
             }
 
-            try self.addToken(Token{
+            self.addToken(Token{
                 .kind = .TK_PUNCT,
                 .value = Token.Value{ .ident_name = try fmt.allocPrint(self.tokens.allocator, "{c}", .{current_punct}) },
                 .location = index,
@@ -165,11 +172,10 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
             var identifier: [max_identifier_length]u8 = undefined;
             identifier[0] = value;
             const next_ident_offset = 1;
-            var identifier_length: usize = 1;
+            var identifier_len: usize = 1;
             for (peek[next_index..]) |identifier_char, ident_index| {
                 if (isValidIdentifierChar(identifier_char)) {
-                    //increase identifier length
-                    identifier_length += next_ident_offset;
+                    identifier_len += next_ident_offset;
                     //move index to end of identifier
                     index += next_ident_offset;
                     identifier[ident_index + next_ident_offset] = identifier_char;
@@ -178,9 +184,9 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
                     break;
                 }
             }
-            try self.addToken(Token{
+            self.addToken(Token{
                 .kind = .TK_IDENT,
-                .value = Token.Value{ .ident_name = try fmt.allocPrint(self.tokens.allocator, "{s}", .{identifier}) },
+                .value = Token.Value{ .ident_name = try fmt.allocPrint(self.tokens.allocator, "{s}", .{identifier[0..identifier_len]}) },
                 .location = current_index,
             });
             continue;
@@ -191,7 +197,7 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
         return error.InvalidToken;
     }
 
-    try self.addToken(Token{
+    self.addToken(Token{
         .kind = .TK_EOF,
         .value = Token.Value{ .ident_name = "EOF" },
         .location = index,
