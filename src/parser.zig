@@ -18,30 +18,49 @@ const AstNodeKind = enum {
     NK_LE, // <=
     NK_GE, // >=
     NK_EXPR_STMT, // Expression statement
+    NK_ASSIGN, // =
+    NK_VAR, // Variable
 };
-
-const Error = error{
-    InvalidExpression,
-    TerminalMismatch,
-} || std.os.WriteError || std.mem.Allocator.Error;
 
 pub const AstNode = AstTree.Node;
 
-const AstTree = struct {
+// Local variable
+pub const Variable = struct {
+    name: []const u8, // Variable name
+    rbp_offset: usize, // Offset from RBP
+};
+
+pub const Function = struct {
+    body: []*const AstNode,
+    local_variables: []*const Variable,
+    stack_size: usize,
+};
+
+pub const AstTree = struct {
 
     // AST node type
     pub const Node = struct {
         kind: AstNodeKind, // Node kind
         lhs: ?*const Node = null, // Left-hand side
         rhs: ?*const Node = null, // Right-hand side
-        value: u64 = undefined, // Used if kind == NK_NUM
+        value: Value,
+        pub const Value = union {
+            number: u64, // value of integer if kind == NK_NUM
+            identifier: *const Variable, // Used if node is an Identifier Token .ie kind == ND_VAR
+        };
     };
     const AstError = error{} || std.mem.Allocator.Error;
 
     allocator: std.mem.Allocator,
+    // All local variable instances created during parsing are accumulated to this list.
+    local_variables: std.ArrayList(*const Variable),
+    local_variables_rbp_offset: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) AstTree {
-        return .{ .allocator = allocator };
+        return .{
+            .allocator = allocator,
+            .local_variables = std.ArrayList(*const Variable).init(allocator),
+        };
     }
 
     fn createAstNode(self: *AstTree, kind: AstNodeKind) *Node {
@@ -63,7 +82,7 @@ const AstTree = struct {
 
     pub fn number(self: *AstTree, value: u64) *const Node {
         var num_terminal_node = self.createAstNode(.NK_NUM);
-        num_terminal_node.value = value;
+        num_terminal_node.value = Node.Value{ .number = value };
         return num_terminal_node;
     }
 
@@ -73,6 +92,46 @@ const AstTree = struct {
         unary_node.lhs = unary_expr;
         unary_node.value = undefined;
         return unary_node;
+    }
+
+    // Assign offsets to local variables.
+    fn nextlvarOffsets(self: *AstTree) usize {
+        const byte_size = 8;
+        const offset = new_offset: {
+            self.local_variables_rbp_offset += byte_size;
+            break :new_offset self.local_variables_rbp_offset;
+        };
+        return offset;
+    }
+
+    fn findVariable(self: *const AstTree, variable_name: []const u8) ?*const Variable {
+        for (self.local_variables.items) |variable| {
+            if (std.mem.eql(u8, variable_name, variable.name)) {
+                return variable;
+            }
+        }
+        return null;
+    }
+
+    pub fn createVariable(self: *AstTree, name: []const u8) *Variable {
+        var new_variable_identifier = self.allocator.create(Variable) catch unreachable;
+        new_variable_identifier.name = name;
+        new_variable_identifier.rbp_offset = offset: {
+            if (self.findVariable(name)) |variable_exist| {
+                break :offset variable_exist.rbp_offset;
+            } else {
+                break :offset self.nextlvarOffsets();
+            }
+        };
+        return new_variable_identifier;
+    }
+
+    pub fn variableAssignment(self: *AstTree, variable: *const Variable) *const Node {
+        var variable_node = self.createAstNode(.NK_VAR);
+        variable_node.value = Node.Value{ .identifier = variable };
+        variable_node.rhs = undefined;
+        variable_node.lhs = undefined;
+        return variable_node;
     }
 };
 
@@ -92,8 +151,15 @@ pub fn init(allocator: std.mem.Allocator, input_token_stream: []const u8) Parser
 pub fn tokenizeInput(self: *Parser) !*const Token {
     return try self.tokenizer.tokenize();
 }
+// Round up `num` to the nearest multiple of `alignment`. For instance,
+// align_to(5, 8) returns 8 and align_to(11, 8) returns 16.
+fn alignTo(num: usize, alignment: usize) usize {
+    // return (num + alignment - 1) / alignment * alignment;
+    return std.mem.alignForward(num, alignment);
+}
+
 //program = stmt
-pub fn parse(self: *Parser, token: *const Token) []*const AstNode {
+pub fn parse(self: *Parser, token: *const Token) Function {
     // NOTE: This can be replaced by a singly linked list of AstNode
     while (self.currentToken().kind != .TK_EOF) {
         self.statements.append(self.stmt(token)) catch |OOM| {
@@ -102,7 +168,11 @@ pub fn parse(self: *Parser, token: *const Token) []*const AstNode {
             std.process.exit(3);
         };
     }
-    return self.statements.items;
+    return .{
+        .body = self.statements.items,
+        .local_variables = self.nodes.local_variables.items,
+        .stack_size = alignTo(self.nodes.local_variables_rbp_offset, 16),
+    };
 }
 
 // stmt = expr_stmt
@@ -114,14 +184,25 @@ fn stmt(self: *Parser, token: *const Token) *const AstNode {
 fn expr_stmt(self: *Parser, token: *const Token) *const AstNode {
     const expr_stmt_node = self.nodes.unaryExpression(.NK_EXPR_STMT, self.expr(token));
     if (self.expectCurrentTokenToMatch(";")) {} else {
-        self.reportParserError("expected statement to end with ';' but found {s}", .{self.currentToken().lexeme});
+        self.reportParserError("expected statement to end with ';' but found {s}", .{self.currentToken().value.ident_name});
     }
     return expr_stmt_node;
 }
 
-// expr = equality
+// expr = assign
 fn expr(self: *Parser, token: *const Token) *const AstNode {
-    return self.equality(token);
+    return self.assign(token);
+}
+
+//assign = equality ('=' assign)?
+fn assign(self: *Parser, token: *const Token) *const AstNode {
+    const equality_lhs_node = self.equality(token);
+    var assignment_tree_node = equality_lhs_node;
+    if (self.isCurrentTokenEqualTo("=")) {
+        const assignment_rhs_node = self.assign(self.nextToken());
+        assignment_tree_node = self.nodes.binaryExpression(.NK_ASSIGN, equality_lhs_node, assignment_rhs_node);
+    }
+    return assignment_tree_node;
 }
 
 //equality = relational ("==" relational | "!=" relational)*
@@ -225,44 +306,49 @@ fn unary(self: *Parser, token: *const Token) *const AstNode {
     }
     _ = token;
 
-    return self.primary(self.currentToken()) catch |err| switch (err) {
-        error.InvalidExpression => {
-            self.reportParserError("{s} :Invalid primary expression", .{@errorName(err)});
-        },
-        error.TerminalMismatch => {
-            self.reportParserError("{s} : Terminals ( must end with a corresponding )", .{@errorName(err)});
-        },
-    };
+    return self.primary(self.currentToken());
 }
 
-// primary = "(" expr ")" | NUM
-fn primary(self: *Parser, token: *const Token) !*const AstNode {
+// primary = "(" expr ")" | IDENTIFIER | NUM
+fn primary(self: *Parser, token: *const Token) *const AstNode {
     if (self.isCurrentTokenEqualTo("(")) {
         const expr_node = self.expr(self.nextToken());
         if (self.expectCurrentTokenToMatch(")")) {} else {
-            self.reportParserError("expected token to be ) but found {s}", .{self.currentToken().lexeme});
-            return error.TerminalMismatch;
+            self.reportParserError("expected token to be ) but found {}", .{self.currentToken().value});
+            self.reportParserError("Terminal ( must end with a corresponding )", .{});
         }
         return expr_node;
     }
+    if (token.kind == .TK_IDENT) {
+        var found_variable = self.nodes.findVariable(token.value.ident_name);
+        if (found_variable) |_| {
+            //if a variable of name token.value.ident_name already exist do nothing
+        } else {
+            found_variable = self.nodes.createVariable(token.value.ident_name);
+            self.nodes.local_variables.append(found_variable.?) catch |err| std.debug.panic("Error:{s}", .{@errorName(err)});
+        }
+        const identifier_node = self.nodes.variableAssignment(found_variable.?);
+        _ = self.nextToken();
+        return identifier_node;
+    }
     if (token.kind == .TK_NUM) {
-        const num_node = self.nodes.number(token.value);
+        const num_node = self.nodes.number(token.value.num_value);
         _ = self.nextToken();
         return num_node;
     }
-    self.reportParserError("Expected an expression , terminal  or number", .{});
-    return error.InvalidExpression;
+    self.reportParserError("Invalid primary expression", .{});
+    self.reportParserError("Expected an expression , variable assignment or a number", .{});
 }
 
 pub fn reportParserError(self: *const Parser, comptime msg: []const u8, args: anytype) noreturn {
     const token = self.currentToken();
-    std.log.err("Invalid Parse Token '{s}' in '{s}' at {d}", .{
-        token.lexeme,
+    std.log.err("\nInvalid Parse Token '{s}' in '{s}' at {d}", .{
+        token.value.ident_name,
         self.tokenizer.stream,
         token.location,
     });
     const location_offset = 34;
-    const token_location = token.location + token.lexeme.len + location_offset;
+    const token_location = token.location + token.value.ident_name.len + location_offset;
     //add empty spaces till the character where the error starts
     std.debug.print("{[spaces]s:>[width]}", .{ .spaces = " ", .width = token_location });
     const format_msg = "^ " ++ msg ++ "\n";
@@ -272,7 +358,15 @@ pub fn reportParserError(self: *const Parser, comptime msg: []const u8, args: an
 // Consumes the current token if it matches `operand`.
 fn isCurrentTokenEqualTo(self: *const Parser, terminal: []const u8) bool {
     const token = self.currentToken();
-    return std.mem.eql(u8, token.lexeme, terminal);
+    if (token.kind != .TK_NUM) {
+        return std.mem.eql(u8, token.value.ident_name, terminal);
+    }
+    const digit = std.fmt.charToDigit(terminal[0], 10) catch undefined;
+    if (digit == token.value.num_value) {
+        return true;
+    } else {
+        return false;
+    }
 }
 
 //look at current token

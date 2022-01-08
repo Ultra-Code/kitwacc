@@ -2,6 +2,7 @@ const std = @import("std");
 const fmt = std.fmt;
 
 const TokenKind = enum {
+    TK_IDENT, // Identifiers
     TK_PUNCT, // Punctuators
     TK_NUM, // Numeric literals
     TK_EOF, // End-of-file markers
@@ -9,10 +10,12 @@ const TokenKind = enum {
 
 pub const Token = struct {
     kind: TokenKind, // Token kind
-    value: u64, // If kind is TK_NUM, its value
-    lexeme: []const u8, // Token lexeme
-    lenght: usize, // Token length
+    value: Value,
     location: usize, // location of Token in input stream
+    pub const Value = union {
+        num_value: u64, // If kind is TK_NUM, its value
+        ident_name: []const u8, // if kind is TK_IDENT, it name
+    };
 };
 
 const Tokenizer = @This();
@@ -41,7 +44,7 @@ fn addToken(self: *Tokenizer, token: Token) !void {
 
 pub fn reportTokenizerError(self: *const Tokenizer, error_slice: []const u8, comptime msg: []const u8, args: anytype) noreturn {
     const token_index = std.mem.indexOf(u8, self.stream, error_slice).?;
-    const error_fmt = "Error: Invalid Token '{s}' in '{s} at {d}\n";
+    const error_fmt = "\nError: Invalid Token '{s}' in '{s} at {d}\n";
     const position_of_stream_in_error_fmt = 28;
     const error_token_start_location = error_slice.len + position_of_stream_in_error_fmt;
     const actual_location = error_token_start_location + token_index;
@@ -59,6 +62,22 @@ fn isPunct(self: *Tokenizer, punct: []const u8) bool {
         return true;
     }
     self.reportTokenizerError(punct, "expected == or <= or >= or != but found {s}", .{punct});
+    return false;
+}
+
+// Returns true if char is valid as the first character of an identifier.
+fn isValid1stCharOfIdentifier(char: u8) bool {
+    if (std.ascii.isAlpha(char) or char == '_') {
+        return true;
+    }
+    return false;
+}
+
+// Returns true if char is valid as a character in an identifier.
+fn isValidIdentifierChar(char: u8) bool {
+    if (isValid1stCharOfIdentifier(char) or std.ascii.isDigit(char)) {
+        return true;
+    }
     return false;
 }
 
@@ -95,9 +114,7 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
             index = next_token_index;
             try self.addToken(Token{
                 .kind = .TK_NUM,
-                .value = digits,
-                .lexeme = try fmt.allocPrint(self.tokens.allocator, "{d}", .{digits}),
-                .lenght = (digit_index - current_index),
+                .value = Token.Value{ .num_value = digits },
                 .location = current_index,
             });
 
@@ -117,15 +134,14 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
             if (current_index + 1 < peek.len) {
                 if (std.ascii.isPunct(peek[current_index + 1])) {
                     const next_punct = peek[current_index + 1];
-                    var buf: [2]u8 = undefined;
+                    const max_punct_char = 2;
+                    var buf: [max_punct_char]u8 = undefined;
                     const operator = try std.fmt.bufPrint(&buf, "{c}{c}", .{ current_punct, next_punct });
                     if (self.isPunct(operator)) {
                         index = current_index + 1;
                         try self.addToken(Token{
                             .kind = .TK_PUNCT,
-                            .value = value,
-                            .lexeme = try fmt.allocPrint(self.tokens.allocator, "{s}", .{operator}),
-                            .lenght = operator.len,
+                            .value = Token.Value{ .ident_name = try fmt.allocPrint(self.tokens.allocator, "{s}", .{operator}) },
                             .location = current_index,
                         });
                         continue;
@@ -135,25 +151,49 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
 
             try self.addToken(Token{
                 .kind = .TK_PUNCT,
-                .value = value,
-                .lexeme = try fmt.allocPrint(self.tokens.allocator, "{c}", .{current_punct}),
-                .lenght = 1,
+                .value = Token.Value{ .ident_name = try fmt.allocPrint(self.tokens.allocator, "{c}", .{current_punct}) },
                 .location = index,
             });
+            continue;
+        }
 
+        //Identifier
+        if (isValid1stCharOfIdentifier(value)) {
+            const current_index = index;
+            const next_index = index + 1;
+            const max_identifier_length = 124;
+            var identifier: [max_identifier_length]u8 = undefined;
+            identifier[0] = value;
+            const next_ident_offset = 1;
+            var identifier_length: usize = 1;
+            for (peek[next_index..]) |identifier_char, ident_index| {
+                if (isValidIdentifierChar(identifier_char)) {
+                    //increase identifier length
+                    identifier_length += next_ident_offset;
+                    //move index to end of identifier
+                    index += next_ident_offset;
+                    identifier[ident_index + next_ident_offset] = identifier_char;
+                } else {
+                    //break if char isn't a valid identifier character
+                    break;
+                }
+            }
+            try self.addToken(Token{
+                .kind = .TK_IDENT,
+                .value = Token.Value{ .ident_name = try fmt.allocPrint(self.tokens.allocator, "{s}", .{identifier}) },
+                .location = current_index,
+            });
             continue;
         }
 
         const bad_token = &[_]u8{value};
-        self.reportTokenizerError(bad_token, "expected number or punctuation but found {s}", .{bad_token});
+        self.reportTokenizerError(bad_token, "expected number or punctuation or identifier but found {s}", .{bad_token});
         return error.InvalidToken;
     }
 
     try self.addToken(Token{
         .kind = .TK_EOF,
-        .value = 0,
-        .lexeme = "EOF",
-        .lenght = 0,
+        .value = Token.Value{ .ident_name = "EOF" },
         .location = index,
     });
     return &self.tokens.items[0];

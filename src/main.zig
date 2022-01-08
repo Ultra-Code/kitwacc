@@ -51,8 +51,8 @@ fn compiler(allocator: std.mem.Allocator, stream: []const u8) !void {
         try generator.codegen(ast_node);
     } else {
         Parser.reportParserError("epected + - < <= > >= == != after {s} but found {s}", .{
-            Parser.previousToken().lexeme,
-            Parser.currentToken().lexeme,
+            Parser.previousToken().value.ident_name,
+            Parser.currentToken().value.ident_name,
         });
     }
 }

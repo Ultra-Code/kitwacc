@@ -2,6 +2,7 @@ const std = @import("std");
 const parser = @import("parser.zig");
 const Node = parser.AstNode;
 const Parser = parser.Parser;
+const Function = parser.Function;
 
 const CodeGenerator = @This();
 
@@ -43,9 +44,23 @@ fn pop(self: *CodeGenerator, register: []const u8) Error!void {
     self.stack_depth -= 1;
 }
 
-pub fn codegen(self: *CodeGenerator, nodes: []*const Node) Error!void {
-    try self.asmPrologue();
-    for (nodes) |node| {
+// Compute the absolute address of a given node.
+// It's an error if a given node does not reside in memory.
+fn genAbsoluteAddress(self: *CodeGenerator, node: *const Node) Error!void {
+    if (node.kind == .NK_VAR) {
+        try self.output_writer.print("{[spaces]s:>[width]}lea -{[offset]d}(%rbp) , %rax\n", .{
+            .spaces = space,
+            .width = space_width,
+            .offset = node.value.identifier.rbp_offset,
+        });
+        return;
+    }
+    std.log.err("Not an lvalue", .{});
+}
+
+pub fn codegen(self: *CodeGenerator, fn_nodes: Function) Error!void {
+    try self.asmPrologue(fn_nodes.stack_size);
+    for (fn_nodes.body) |node| {
         try self.genStmts(node);
     }
     try self.asmEpilogue();
@@ -58,21 +73,31 @@ fn genStmts(self: *CodeGenerator, node: *const Node) Error!void {
     std.log.err("invalid expression statement", .{});
 }
 
-fn asmPrologue(self: *CodeGenerator) Error!void {
+fn asmPrologue(self: *CodeGenerator, stack_size: usize) Error!void {
+    // Prologue
     try self.output_writer.print(
+        \\#global main entry point
         \\{[spaces]s:>[width]}.globl main
         \\{[spaces]s:>[width]}.type  main, @function
         \\main:
+        \\#prologue
+        \\{[spaces]s:>[width]}push %rbp
+        \\{[spaces]s:>[width]}mov %rsp, %rbp
+        \\{[spaces]s:>[width]}sub ${[stack_offset]d},%rsp
+        \\
         \\
     , .{
         .spaces = space,
         .width = space_width,
+        .stack_offset = stack_size,
     });
 }
 
 fn asmEpilogue(self: *CodeGenerator) Error!void {
     try self.output_writer.print(
-        \\
+        \\#epilogue
+        \\{[spaces]s:>[width]}mov %rbp, %rsp
+        \\{[spaces]s:>[width]}pop %rbp
         \\{[spaces]s:>[width]}ret
         \\
     , .{
@@ -81,6 +106,7 @@ fn asmEpilogue(self: *CodeGenerator) Error!void {
     });
 }
 
+// Generate code for a given node.
 fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
     //since these nodes are terminal nodes there are no other nodes on either sides of the tree
     //so we must return after generating code for them. These serve as the terminating condition
@@ -89,7 +115,7 @@ fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
         try self.output_writer.print("{[spaces]s:>[width]}mov ${[immediate_constant]d},%rax\n", .{
             .spaces = space,
             .width = space_width,
-            .immediate_constant = node.value,
+            .immediate_constant = node.value.number,
         });
         return;
     }
@@ -97,6 +123,25 @@ fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
         //recurse on the side of the tree were the nodes are
         try self.generateAsm(node.lhs.?);
         try self.output_writer.print("{[spaces]s:>[width]}neg %rax\n", .{
+            .spaces = space,
+            .width = space_width,
+        });
+        return;
+    }
+    if (node.kind == .NK_VAR) {
+        try self.genAbsoluteAddress(node);
+        try self.output_writer.print("{[spaces]s:>[width]}mov (%rax), %rax\n", .{
+            .spaces = space,
+            .width = space_width,
+        });
+        return;
+    }
+    if (node.kind == .NK_ASSIGN) {
+        try self.genAbsoluteAddress(node.lhs.?);
+        try self.push();
+        try self.generateAsm(node.rhs.?);
+        try self.pop("%rdi");
+        try self.output_writer.print("{[spaces]s:>[width]}mov %rax, (%rdi)\n", .{
             .spaces = space,
             .width = space_width,
         });
