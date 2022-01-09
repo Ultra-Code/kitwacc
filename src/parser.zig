@@ -169,15 +169,22 @@ pub fn parse(self: *Parser, token: *const Token) Function {
     };
 }
 
-// stmt = expr_stmt
+// stmt = "return" expr ";" | expr_stmt
 fn stmt(self: *Parser, token: *const Token) *const AstNode {
+    if (self.isCurrentTokenEqualTo("return")) {
+        const return_statement = self.nodes.unaryExpression(.NK_RETURN, self.expr(self.nextToken()));
+        if (!self.expectCurrentTokenToMatch(";")) {
+            self.reportParserError("expected statement to end with ';' but found {s}", .{self.currentToken().value.ident_name});
+        }
+        return return_statement;
+    }
     return self.expr_stmt(token);
 }
 
 // expr_stmt = expr ";"
 fn expr_stmt(self: *Parser, token: *const Token) *const AstNode {
     const expr_stmt_node = self.nodes.unaryExpression(.NK_EXPR_STMT, self.expr(token));
-    if (self.expectCurrentTokenToMatch(";")) {} else {
+    if (!self.expectCurrentTokenToMatch(";")) {
         self.reportParserError("expected statement to end with ';' but found {s}", .{self.currentToken().value.ident_name});
     }
     return expr_stmt_node;
@@ -328,8 +335,7 @@ fn primary(self: *Parser, token: *const Token) *const AstNode {
         _ = self.nextToken();
         return num_node;
     }
-    self.reportParserError("Invalid primary expression", .{});
-    self.reportParserError("Expected an expression , variable assignment or a number", .{});
+    self.reportParserError("Expected an ( expression ) , variable assignment or a number", .{});
 }
 
 pub fn reportParserError(self: *const Parser, comptime msg: []const u8, args: anytype) noreturn {

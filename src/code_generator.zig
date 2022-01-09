@@ -257,17 +257,29 @@ fn comment(self: *CodeGenerator, asm_comment: []const u8) Error!void {
     , .{ .comments = asm_comment });
 }
 
-fn labelFunction(self: *CodeGenerator, function_name: []const u8) Error!void {
+fn labelFunction(self: *CodeGenerator, func_name: []const u8) Error!void {
     try self.output_writer.print(
         \\{[spaces]s:>[width]}.globl {[func_name]s}
         \\{[spaces]s:>[width]}.type  {[func_name]s}, @function
-        \\{[func_name]s}:
     , .{
         .spaces = space,
         .width = space_width,
-        .func_name = function_name,
+        .func_name = func_name,
+    });
+    try self.label(func_name);
+}
+
+///Add a label in asm output
+fn label(self: *CodeGenerator, name: []const u8) Error!void {
+    try self.output_writer.print(
+        \\
+        \\{[label_name]s}:
+        \\
+    , .{
+        .label_name = name,
     });
 }
+
 fn asmPrologue(self: *CodeGenerator, stack_size: usize) Error!void {
     // Prologue
     try self.comment("global main entry point ");
@@ -289,8 +301,20 @@ fn ret(self: *CodeGenerator) Error!void {
     });
 }
 
+fn jmp(self: *CodeGenerator, location: []const u8) Error!void {
+    try self.output_writer.print(
+        \\{[space]s:>[width]}jmp {[location]s}
+        \\
+    , .{
+        .space = space,
+        .width = space_width,
+        .location = location,
+    });
+}
+
 fn asmEpilogue(self: *CodeGenerator) Error!void {
     try self.comment("asm epilogue");
+    try self.label(".L.exit_main");
     try self.mov(.register, "%rbp", "%rsp");
     try self.pop("%rbp");
     try self.ret();
@@ -313,7 +337,13 @@ pub fn codegen(self: *CodeGenerator, fn_nodes: Function) Error!void {
     }
     try self.asmEpilogue();
 }
+
 fn genStmts(self: *CodeGenerator, node: *const Node) Error!void {
+    if (node.kind == .NK_RETURN) {
+        try self.generateAsm(node.lhs.?);
+        try self.jmp(".L.exit_main");
+        return;
+    }
     if (node.kind == .NK_EXPR_STMT) {
         try self.generateAsm(node.lhs.?);
         return;

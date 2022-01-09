@@ -6,6 +6,7 @@ const TokenKind = enum {
     TK_PUNCT, // Punctuators
     TK_NUM, // Numeric literals
     TK_EOF, // End-of-file markers
+    TK_KEYWORD, //Keywords
 };
 
 pub const Token = struct {
@@ -61,18 +62,22 @@ pub fn reportTokenizerError(self: *const Tokenizer, error_slice: []const u8, com
     std.process.exit(2);
 }
 
-fn isPunct(self: *Tokenizer, punct: []const u8) bool {
-    if (std.mem.eql(u8, punct, "==") or std.mem.eql(u8, punct, "<=") or std.mem.eql(u8, punct, ">=") or
-        std.mem.eql(u8, punct, "!="))
-    {
-        return true;
+const PUNCTUATOR = [_][]const u8{
+    "==",
+    "<=",
+    ">=",
+    "!=",
+};
+
+fn isPunct(punct: []const u8) bool {
+    for (PUNCTUATOR) |punctuation| {
+        if (std.mem.eql(u8, punctuation, punct)) return true;
     }
-    self.reportTokenizerError(punct, "expected == or <= or >= or != but found {s}", .{punct});
     return false;
 }
 
 // Returns true if char is valid as the first character of an identifier.
-fn isValid1stCharOfIdentifier(char: u8) bool {
+fn isValidIdentifier1stChar(char: u8) bool {
     if (std.ascii.isAlpha(char) or char == '_') {
         return true;
     }
@@ -81,8 +86,19 @@ fn isValid1stCharOfIdentifier(char: u8) bool {
 
 // Returns true if char is valid as a character in an identifier.
 fn isValidIdentifierChar(char: u8) bool {
-    if (isValid1stCharOfIdentifier(char) or std.ascii.isDigit(char)) {
+    if (isValidIdentifier1stChar(char) or std.ascii.isDigit(char)) {
         return true;
+    }
+    return false;
+}
+
+const KEYWORDS = [_][]const u8{
+    "return",
+};
+
+fn isKeyword(identifier: []const u8) bool {
+    for (KEYWORDS) |keyword| {
+        return std.mem.eql(u8, keyword, identifier);
     }
     return false;
 }
@@ -144,7 +160,7 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
                     const max_punct_char = 2;
                     var buf: [max_punct_char]u8 = undefined;
                     const operator = try std.fmt.bufPrint(&buf, "{c}{c}", .{ current_punct, next_punct });
-                    if (self.isPunct(operator)) {
+                    if (isPunct(operator)) {
                         index = current_index + 1;
                         self.addToken(Token{
                             .kind = .TK_PUNCT,
@@ -164,13 +180,13 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
             continue;
         }
 
-        //Identifier
-        if (isValid1stCharOfIdentifier(value)) {
+        //Identifier or Keywords
+        if (isValidIdentifier1stChar(value)) {
             const current_index = index;
             const next_index = index + 1;
             const max_identifier_length = 124;
-            var identifier: [max_identifier_length]u8 = undefined;
-            identifier[0] = value;
+            var identifier_buf: [max_identifier_length]u8 = undefined;
+            identifier_buf[0] = value;
             const next_ident_offset = 1;
             var identifier_len: usize = 1;
             for (peek[next_index..]) |identifier_char, ident_index| {
@@ -178,17 +194,28 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
                     identifier_len += next_ident_offset;
                     //move index to end of identifier
                     index += next_ident_offset;
-                    identifier[ident_index + next_ident_offset] = identifier_char;
+                    identifier_buf[ident_index + next_ident_offset] = identifier_char;
                 } else {
                     //break if char isn't a valid identifier character
                     break;
                 }
             }
-            self.addToken(Token{
-                .kind = .TK_IDENT,
-                .value = Token.Value{ .ident_name = try fmt.allocPrint(self.tokens.allocator, "{s}", .{identifier[0..identifier_len]}) },
-                .location = current_index,
-            });
+            const identifier = identifier_buf[0..identifier_len];
+
+            if (isKeyword(identifier)) {
+                self.addToken(Token{
+                    .kind = .TK_KEYWORD,
+                    .value = Token.Value{ .ident_name = try fmt.allocPrint(self.tokens.allocator, "{s}", .{identifier}) },
+                    .location = current_index,
+                });
+            } else {
+                self.addToken(Token{
+                    .kind = .TK_IDENT,
+                    .value = Token.Value{ .ident_name = try fmt.allocPrint(self.tokens.allocator, "{s}", .{identifier}) },
+                    .location = current_index,
+                });
+            }
+
             continue;
         }
 
