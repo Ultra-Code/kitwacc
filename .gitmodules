@@ -1,0 +1,4 @@
+[submodule "deps/algods"]
+	path = deps/algods
+	url = https://github.com/Ultra-Code/algods
+	branch = master
