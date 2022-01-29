@@ -2,6 +2,7 @@ const std = @import("std");
 const Tokenizer = @import("tokenizer.zig");
 const Token = Tokenizer.Token;
 const OOMhandler = Tokenizer.OOMhandler;
+const algods = @import("algods");
 
 pub const Parser = @This();
 
@@ -22,9 +23,8 @@ const AstNodeKind = enum {
     NK_ASSIGN, // =
     NK_VAR, // Variable
     NK_RETURN, // return statement
+    NK_BLOCK, // { block }
 };
-
-pub const AstNode = AstTree.Node;
 
 // Local variable
 pub const Variable = struct {
@@ -32,45 +32,47 @@ pub const Variable = struct {
     rbp_offset: usize, // Offset from RBP
 };
 
+//I use a SinglyCircularList because appending doesn't require node traversal
+pub const ExprList = algods.linked_list.SinglyCircularList(*const AstTree.AstNode);
+pub const VarList = algods.linked_list.SinglyCircularList(*const Variable);
+
 pub const Function = struct {
-    body: []*const AstNode,
-    local_variables: []*const Variable,
+    body: ExprList,
+    local_variables: VarList,
     stack_size: usize,
 };
 
 pub const AstTree = struct {
 
     // AST node type
-    pub const Node = struct {
-        kind: AstNodeKind, // Node kind
-        lhs: ?*const Node = null, // Left-hand side
-        rhs: ?*const Node = null, // Right-hand side
+    pub const AstNode = struct {
+        kind: AstNodeKind, // AstNode kind
+        lhs: ?*const AstNode = null, // Left-hand side
+        rhs: ?*const AstNode = null, // Right-hand side
         value: Value,
         pub const Value = union {
             number: u64, // value of integer if kind == NK_NUM
             identifier: *const Variable, // Used if node is an Identifier Token .ie kind == ND_VAR
+            expression: ExprList,
         };
     };
 
     allocator: std.mem.Allocator,
     // All local variable instances created during parsing are accumulated to this list.
-    local_variables: std.ArrayList(*const Variable),
+    local_variables: VarList,
     local_variables_rbp_offset: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) AstTree {
-        return .{
-            .allocator = allocator,
-            .local_variables = std.ArrayList(*const Variable).init(allocator),
-        };
+        return .{ .allocator = allocator, .local_variables = VarList.init(allocator) };
     }
 
-    fn createAstNode(self: *AstTree, kind: AstNodeKind) *Node {
-        var new_ast_node = self.allocator.create(Node) catch OOMhandler();
+    fn createAstNode(self: *AstTree, kind: AstNodeKind) *AstNode {
+        var new_ast_node = self.allocator.create(AstNode) catch OOMhandler();
         new_ast_node.kind = kind;
         return new_ast_node;
     }
 
-    pub fn binaryExpression(self: *AstTree, kind: AstNodeKind, lhs: *const Node, rhs: *const Node) *const Node {
+    pub fn binaryExpression(self: *AstTree, kind: AstNodeKind, lhs: *const AstNode, rhs: *const AstNode) *const AstNode {
         var binaray_node = self.createAstNode(kind);
         binaray_node.rhs = rhs;
         binaray_node.lhs = lhs;
@@ -78,18 +80,26 @@ pub const AstTree = struct {
         return binaray_node;
     }
 
-    pub fn number(self: *AstTree, value: u64) *const Node {
+    pub fn number(self: *AstTree, value: u64) *const AstNode {
         var num_terminal_node = self.createAstNode(.NK_NUM);
-        num_terminal_node.value = Node.Value{ .number = value };
+        num_terminal_node.value = AstNode.Value{ .number = value };
         return num_terminal_node;
     }
 
-    pub fn unaryExpression(self: *AstTree, Kind: AstNodeKind, unary_expr: *const Node) *const Node {
-        var unary_node = self.createAstNode(Kind);
-        unary_node.rhs = undefined;
-        unary_node.lhs = unary_expr;
+    pub fn unaryExpression(self: *AstTree, kind: AstNodeKind, unary_expr: *const AstNode) *const AstNode {
+        var unary_node = self.createAstNode(kind);
+        unary_node.rhs = unary_expr;
+        unary_node.lhs = undefined;
         unary_node.value = undefined;
         return unary_node;
+    }
+
+    pub fn blockExpression(self: *AstTree, kind: AstNodeKind, list_of_expr: ExprList) *const AstNode {
+        var compound_node = self.createAstNode(kind);
+        compound_node.rhs = undefined;
+        compound_node.lhs = undefined;
+        compound_node.value = AstNode.Value{ .expression = list_of_expr };
+        return compound_node;
     }
 
     // Assign offsets to local variables.
@@ -103,9 +113,11 @@ pub const AstTree = struct {
     }
 
     fn findVariable(self: *const AstTree, variable_name: []const u8) ?*const Variable {
-        for (self.local_variables.items) |variable| {
-            if (std.mem.eql(u8, variable_name, variable.name)) {
-                return variable;
+        // Traverse forwards.
+        var it = self.local_variables.iterator();
+        while (it.next()) |variable| {
+            if (std.mem.eql(u8, variable_name, variable.data.name)) {
+                return variable.data;
             }
         }
         return null;
@@ -124,9 +136,15 @@ pub const AstTree = struct {
         return new_variable_identifier;
     }
 
-    pub fn variableAssignment(self: *AstTree, variable: *const Variable) *const Node {
+    pub fn createListNode(self: *AstTree, comptime T: type, data: anytype) *T {
+        var expr_list_node = self.allocator.create(T) catch OOMhandler();
+        expr_list_node.data = data;
+        return expr_list_node;
+    }
+
+    pub fn variableAssignment(self: *AstTree, variable: *const Variable) *const AstNode {
         var variable_node = self.createAstNode(.NK_VAR);
-        variable_node.value = Node.Value{ .identifier = variable };
+        variable_node.value = AstNode.Value{ .identifier = variable };
         variable_node.rhs = undefined;
         variable_node.lhs = undefined;
         return variable_node;
@@ -135,14 +153,14 @@ pub const AstTree = struct {
 
 nodes: AstTree,
 tokenizer: Tokenizer,
-statements: std.ArrayList(*const AstNode),
+statements: ExprList,
 items_position: usize = 0,
 
 pub fn init(allocator: std.mem.Allocator, input_token_stream: []const u8) Parser {
     return .{
         .nodes = AstTree.init(allocator),
         .tokenizer = Tokenizer.init(allocator, input_token_stream),
-        .statements = std.ArrayList(*const AstNode).init(allocator),
+        .statements = ExprList.init(allocator),
     };
 }
 
@@ -159,18 +177,35 @@ fn alignTo(num: usize, alignment: usize) usize {
 //program = stmt
 pub fn parse(self: *Parser, token: *const Token) Function {
     // NOTE: This can be replaced by a singly linked list of AstNode
-    while (self.currentToken().kind != .TK_EOF) {
-        self.statements.append(self.stmt(token)) catch OOMhandler();
+    if (self.expectCurrentTokenToMatch("{")) {
+        self.statements = self.compoundStmt(token);
+    } else {
+        self.reportParserError("expected program to start with {{ but found {s}", .{self.currentToken().value.ident_name});
     }
+    //After parsing the stream of tokens EOF must be the last token
+    std.debug.assert(self.currentToken().kind == .TK_EOF);
+
     return .{
-        .body = self.statements.items,
-        .local_variables = self.nodes.local_variables.items,
+        .body = self.statements,
+        .local_variables = self.nodes.local_variables,
         .stack_size = alignTo(self.nodes.local_variables_rbp_offset, 16),
     };
 }
+//compound-stmt = stmt* "}"
+fn compoundStmt(self: *Parser, token: *const Token) ExprList {
+    var compound_stmt = ExprList.init(self.nodes.allocator);
+    while (!self.isCurrentTokenEqualTo("}")) {
+        const statement = self.stmt(token);
+        compound_stmt.append(statement) catch OOMhandler();
+    }
+    if (!self.expectCurrentTokenToMatch("}")) {
+        self.reportParserError("expected block to end with }} but found {s}", .{self.currentToken().value.ident_name});
+    }
+    return compound_stmt;
+}
 
-// stmt = "return" expr ";" | expr_stmt
-fn stmt(self: *Parser, token: *const Token) *const AstNode {
+// stmt = "return" expr ";" | "{" compound-stmt | expr_stmt
+fn stmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
     if (self.isCurrentTokenEqualTo("return")) {
         const return_statement = self.nodes.unaryExpression(.NK_RETURN, self.expr(self.nextToken()));
         if (!self.expectCurrentTokenToMatch(";")) {
@@ -178,11 +213,15 @@ fn stmt(self: *Parser, token: *const Token) *const AstNode {
         }
         return return_statement;
     }
+    if (self.isCurrentTokenEqualTo("{")) {
+        const compound_stmt = self.nodes.blockExpression(.NK_BLOCK, self.compoundStmt(self.nextToken()));
+        return compound_stmt;
+    }
     return self.expr_stmt(token);
 }
 
 // expr_stmt = expr ";"
-fn expr_stmt(self: *Parser, token: *const Token) *const AstNode {
+fn expr_stmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
     const expr_stmt_node = self.nodes.unaryExpression(.NK_EXPR_STMT, self.expr(token));
     if (!self.expectCurrentTokenToMatch(";")) {
         self.reportParserError("expected statement to end with ';' but found {s}", .{self.currentToken().value.ident_name});
@@ -191,12 +230,12 @@ fn expr_stmt(self: *Parser, token: *const Token) *const AstNode {
 }
 
 // expr = assign
-fn expr(self: *Parser, token: *const Token) *const AstNode {
+fn expr(self: *Parser, token: *const Token) *const AstTree.AstNode {
     return self.assign(token);
 }
 
 //assign = equality ('=' assign)?
-fn assign(self: *Parser, token: *const Token) *const AstNode {
+fn assign(self: *Parser, token: *const Token) *const AstTree.AstNode {
     const equality_lhs_node = self.equality(token);
     var assignment_tree_node = equality_lhs_node;
     if (self.isCurrentTokenEqualTo("=")) {
@@ -207,7 +246,7 @@ fn assign(self: *Parser, token: *const Token) *const AstNode {
 }
 
 //equality = relational ("==" relational | "!=" relational)*
-fn equality(self: *Parser, token: *const Token) *const AstNode {
+fn equality(self: *Parser, token: *const Token) *const AstTree.AstNode {
     const equality_lhs_node = self.relational(token);
     var equality_tree_node = equality_lhs_node;
 
@@ -227,7 +266,7 @@ fn equality(self: *Parser, token: *const Token) *const AstNode {
 }
 
 //relational = add ("<" add | "<=" add | ">" add | ">=" add)*
-fn relational(self: *Parser, token: *const Token) *const AstNode {
+fn relational(self: *Parser, token: *const Token) *const AstTree.AstNode {
     const relational_lhs_node = self.add(token);
     var relational_tree_node = relational_lhs_node;
 
@@ -256,7 +295,7 @@ fn relational(self: *Parser, token: *const Token) *const AstNode {
     }
 }
 // add = mul ("+" mul | "-" mul)
-pub fn add(self: *Parser, token: *const Token) *const AstNode {
+pub fn add(self: *Parser, token: *const Token) *const AstTree.AstNode {
     const lhs_node = self.mul(token);
     var next_lhs_node = lhs_node;
     while (true) {
@@ -276,7 +315,7 @@ pub fn add(self: *Parser, token: *const Token) *const AstNode {
 }
 
 //  mul = unary ("*" unary | "/" unary)*
-fn mul(self: *Parser, token: *const Token) *const AstNode {
+fn mul(self: *Parser, token: *const Token) *const AstTree.AstNode {
     const lhs_node = self.unary(token);
     var next_lhs_node = lhs_node;
     while (true) {
@@ -297,7 +336,7 @@ fn mul(self: *Parser, token: *const Token) *const AstNode {
 }
 
 // unary = ('+'|'-') unary | primary
-fn unary(self: *Parser, token: *const Token) *const AstNode {
+fn unary(self: *Parser, token: *const Token) *const AstTree.AstNode {
     if (self.isCurrentTokenEqualTo("+")) {
         return self.unary(self.nextToken());
     }
@@ -311,7 +350,7 @@ fn unary(self: *Parser, token: *const Token) *const AstNode {
 }
 
 // primary = "(" expr ")" | IDENTIFIER | NUM
-fn primary(self: *Parser, token: *const Token) *const AstNode {
+fn primary(self: *Parser, token: *const Token) *const AstTree.AstNode {
     if (self.isCurrentTokenEqualTo("(")) {
         const expr_node = self.expr(self.nextToken());
         if (self.expectCurrentTokenToMatch(")")) {} else {

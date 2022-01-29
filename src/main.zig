@@ -44,17 +44,10 @@ fn compiler(allocator: std.mem.Allocator, stream: []const u8) !void {
     const token = try Parser.tokenizeInput();
     const ast_node = Parser.parse(token);
 
-    if (Parser.currentToken().kind == .TK_EOF) {
-        var generator = try code_generator.init("test/output.s");
-        defer generator.deinit();
-        // Traverse the AST to emit assembly.
-        try generator.codegen(ast_node);
-    } else {
-        Parser.reportParserError("epected + - < <= > >= == != after {s} but found {s}", .{
-            Parser.previousToken().value.ident_name,
-            Parser.currentToken().value.ident_name,
-        });
-    }
+    var generator = try code_generator.init("test/output.s");
+    defer generator.deinit();
+    // Traverse the AST to emit assembly.
+    try generator.codegen(ast_node);
 }
 
 test "kitwacc compiler test suite" {

@@ -1,7 +1,8 @@
 const std = @import("std");
 const parser = @import("parser.zig");
-const Node = parser.AstNode;
+const AstNode = parser.AstTree.AstNode;
 const Function = parser.Function;
+const ExprList = parser.ExprList;
 
 const CodeGenerator = @This();
 
@@ -322,7 +323,7 @@ fn asmEpilogue(self: *CodeGenerator) Error!void {
 
 // Compute the absolute address of a given node.
 // It's an error if a given node does not reside in memory.
-fn genAbsoluteAddress(self: *CodeGenerator, node: *const Node) Error!void {
+fn genAbsoluteAddress(self: *CodeGenerator, node: *const AstNode) Error!void {
     if (node.kind == .NK_VAR) {
         try self.lea(node.value.identifier.rbp_offset, "%rbp", "%rax");
         return;
@@ -332,27 +333,39 @@ fn genAbsoluteAddress(self: *CodeGenerator, node: *const Node) Error!void {
 
 pub fn codegen(self: *CodeGenerator, fn_nodes: Function) Error!void {
     try self.asmPrologue(fn_nodes.stack_size);
-    for (fn_nodes.body) |node| {
+    // Traverse forwards.
+    var it = fn_nodes.body.iterator();
+    while (it.next()) |node| {
         try self.genStmts(node);
     }
     try self.asmEpilogue();
 }
 
-fn genStmts(self: *CodeGenerator, node: *const Node) Error!void {
+fn genStmts(self: *CodeGenerator, nodes: *ExprList.Node) Error!void {
+    const node = nodes.data;
+    if (node.kind == .NK_BLOCK) {
+        // Traverse forwards.
+        //the data for the block is the expression field of the Value union
+        var it = nodes.data.value.expression.iterator();
+        while (it.next()) |block| {
+            try self.genStmts(block);
+        }
+        return;
+    }
     if (node.kind == .NK_RETURN) {
-        try self.generateAsm(node.lhs.?);
+        try self.generateAsm(node.rhs.?);
         try self.jmp(".L.exit_main");
         return;
     }
     if (node.kind == .NK_EXPR_STMT) {
-        try self.generateAsm(node.lhs.?);
+        try self.generateAsm(node.rhs.?);
         return;
     }
     std.log.err("invalid expression statement", .{});
 }
 
 // Generate code for a given node.
-fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
+fn generateAsm(self: *CodeGenerator, node: *const AstNode) Error!void {
     //since these nodes are terminal nodes there are no other nodes on either sides of the tree
     //so we must return after generating code for them. These serve as the terminating condition
     //of the recursive descent
@@ -362,7 +375,7 @@ fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
     }
     if (node.kind == .NK_NEG) {
         //recurse on the side of the tree were the nodes are
-        try self.generateAsm(node.lhs.?);
+        try self.generateAsm(node.rhs.?);
         try self.neg("%rax");
         return;
     }
@@ -380,7 +393,7 @@ fn generateAsm(self: *CodeGenerator, node: *const Node) Error!void {
         return;
     }
     if (node.kind == .NK_RETURN) {
-        try self.generateAsm(node.lhs.?);
+        try self.generateAsm(node.rhs.?);
     }
     try self.generateAsm(node.rhs.?);
     try self.push("%rax");
