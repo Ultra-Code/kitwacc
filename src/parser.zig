@@ -24,6 +24,7 @@ const AstNodeKind = enum {
     NK_VAR, // Variable
     NK_RETURN, // return statement
     NK_BLOCK, // { block }
+    NK_IF, // if
 };
 
 // Local variable
@@ -42,6 +43,13 @@ pub const Function = struct {
     stack_size: usize,
 };
 
+//if statement
+const Conditonal = struct {
+    if_expr: *const AstTree.AstNode,
+    then_branch: *const AstTree.AstNode,
+    else_branch: ?*const AstTree.AstNode = null,
+};
+
 pub const AstTree = struct {
 
     // AST node type
@@ -53,7 +61,8 @@ pub const AstTree = struct {
         pub const Value = union {
             number: u64, // value of integer if kind == NK_NUM
             identifier: *const Variable, // Used if node is an Identifier Token .ie kind == ND_VAR
-            expression: ExprList,
+            block: ExprList, // Block { ... }
+            if_statement: Conditonal, //if statement
         };
     };
 
@@ -76,7 +85,6 @@ pub const AstTree = struct {
         var binaray_node = self.createAstNode(kind);
         binaray_node.rhs = rhs;
         binaray_node.lhs = lhs;
-        binaray_node.value = undefined;
         return binaray_node;
     }
 
@@ -89,17 +97,19 @@ pub const AstTree = struct {
     pub fn unaryExpression(self: *AstTree, kind: AstNodeKind, unary_expr: *const AstNode) *const AstNode {
         var unary_node = self.createAstNode(kind);
         unary_node.rhs = unary_expr;
-        unary_node.lhs = undefined;
-        unary_node.value = undefined;
         return unary_node;
     }
 
-    pub fn blockExpression(self: *AstTree, kind: AstNodeKind, list_of_expr: ExprList) *const AstNode {
+    pub fn blockExpression(self: *AstTree, kind: AstNodeKind, expression_list: ExprList) *const AstNode {
         var compound_node = self.createAstNode(kind);
-        compound_node.rhs = undefined;
-        compound_node.lhs = undefined;
-        compound_node.value = AstNode.Value{ .expression = list_of_expr };
+        compound_node.value = AstNode.Value{ .block = expression_list };
         return compound_node;
+    }
+
+    pub fn conditionExpression(self: *AstTree, kind: AstNodeKind, conditional_expression: Conditonal) *const AstNode {
+        var if_statement = self.createAstNode(kind);
+        if_statement.value = AstNode.Value{ .if_statement = conditional_expression };
+        return if_statement;
     }
 
     // Assign offsets to local variables.
@@ -116,8 +126,8 @@ pub const AstTree = struct {
         // Traverse forwards.
         var it = self.local_variables.iterator();
         while (it.next()) |variable| {
-            if (std.mem.eql(u8, variable_name, variable.data.name)) {
-                return variable.data;
+            if (std.mem.eql(u8, variable_name, variable.name)) {
+                return variable;
             }
         }
         return null;
@@ -136,17 +146,9 @@ pub const AstTree = struct {
         return new_variable_identifier;
     }
 
-    pub fn createListNode(self: *AstTree, comptime T: type, data: anytype) *T {
-        var expr_list_node = self.allocator.create(T) catch OOMhandler();
-        expr_list_node.data = data;
-        return expr_list_node;
-    }
-
     pub fn variableAssignment(self: *AstTree, variable: *const Variable) *const AstNode {
         var variable_node = self.createAstNode(.NK_VAR);
         variable_node.value = AstNode.Value{ .identifier = variable };
-        variable_node.rhs = undefined;
-        variable_node.lhs = undefined;
         return variable_node;
     }
 };
@@ -204,7 +206,9 @@ fn compoundStmt(self: *Parser, token: *const Token) ExprList {
     return compound_stmt;
 }
 
-// stmt = "return" expr ";" | "{" compound-stmt | expr_stmt
+/// stmt = "return" expr ";" | "{" compound-stmt |
+///       | "if" "(" expr ")" "{" stmt "}" ("else" "{" stmt "}")?
+///       $ expr_stmt
 fn stmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
     if (self.isCurrentTokenEqualTo("return")) {
         const return_statement = self.nodes.unaryExpression(.NK_RETURN, self.expr(self.nextToken()));
@@ -217,11 +221,31 @@ fn stmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
         const compound_stmt = self.nodes.blockExpression(.NK_BLOCK, self.compoundStmt(self.nextToken()));
         return compound_stmt;
     }
-    return self.expr_stmt(token);
+    if (self.isCurrentTokenEqualTo("if")) {
+        if (self.expectToken(self.nextToken(), "(")) {
+            const if_expr = self.expr(self.currentToken());
+            if (self.expectCurrentTokenToMatch(")")) {
+                const then_branch = self.stmt(self.currentToken());
+                if (self.isCurrentTokenEqualTo("else")) {
+                    const else_branch = self.stmt(self.nextToken());
+                    const if_statement = self.nodes.conditionExpression(.NK_IF, .{ .if_expr = if_expr, .then_branch = then_branch, .else_branch = else_branch });
+                    return if_statement;
+                } else {
+                    const if_statement = self.nodes.conditionExpression(.NK_IF, .{ .if_expr = if_expr, .then_branch = then_branch });
+                    return if_statement;
+                }
+            } else {
+                self.reportParserError("expected ) after  if ( expr  but found {s}", .{self.currentToken().value.ident_name});
+            }
+        } else {
+            self.reportParserError("expected ( after if keyword but found {s}", .{self.currentToken().value.ident_name});
+        }
+    }
+    return self.exprStmt(token);
 }
 
 // expr_stmt = expr ";"
-fn expr_stmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
+fn exprStmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
     const expr_stmt_node = self.nodes.unaryExpression(.NK_EXPR_STMT, self.expr(token));
     if (!self.expectCurrentTokenToMatch(";")) {
         self.reportParserError("expected statement to end with ';' but found {s}", .{self.currentToken().value.ident_name});
@@ -394,7 +418,8 @@ pub fn reportParserError(self: *const Parser, comptime msg: []const u8, args: an
     std.debug.print(format_msg, args);
     std.process.exit(3);
 }
-// Consumes the current token if it matches `operand`.
+
+///check if current token matches terminal
 fn isCurrentTokenEqualTo(self: *const Parser, terminal: []const u8) bool {
     const token = self.currentToken();
     if (token.kind != .TK_NUM) {
@@ -408,6 +433,31 @@ fn isCurrentTokenEqualTo(self: *const Parser, terminal: []const u8) bool {
     }
 }
 
+///consumes token if it matches terminal.
+fn expectToken(self: *Parser, token: *const Token, terminal: []const u8) bool {
+    if (token.kind != .TK_NUM) {
+        const match = std.mem.eql(u8, token.value.ident_name, terminal);
+        if (match) {
+            _ = self.nextToken();
+            return true;
+        } else {
+            return false;
+        }
+    }
+    const digit = std.fmt.charToDigit(terminal[0], 10) catch undefined;
+    if (digit == token.value.num_value) {
+        _ = self.nextToken();
+        return true;
+    } else {
+        return false;
+    }
+}
+
+///consume current Token if it matches the terminal
+fn expectCurrentTokenToMatch(self: *Parser, terminal: []const u8) bool {
+    return self.expectToken(self.currentToken(), terminal);
+}
+
 //look at current token
 pub fn currentToken(self: *const Parser) *const Token {
     return &self.tokenizer.tokens.items[self.items_position];
@@ -417,22 +467,4 @@ pub fn currentToken(self: *const Parser) *const Token {
 fn nextToken(self: *Parser) *const Token {
     self.items_position += 1;
     return &self.tokenizer.tokens.items[self.items_position];
-}
-
-//look at the previous token usually useful when dealing with errors
-pub fn previousToken(self: *const Parser) *const Token {
-    if (self.items_position - 1 < 0) {
-        return &self.tokenizer.tokens.items[self.items_position - 1];
-    }
-    return &self.tokenizer.tokens.items[0];
-}
-
-///Ensure that the current terminal token matches the peek
-///and move to the next token is it indeed matches
-fn expectCurrentTokenToMatch(self: *Parser, terminal: []const u8) bool {
-    if (self.isCurrentTokenEqualTo(terminal)) {
-        _ = self.nextToken();
-        return true;
-    }
-    return false;
 }

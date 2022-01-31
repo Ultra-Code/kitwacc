@@ -94,11 +94,15 @@ fn isValidIdentifierChar(char: u8) bool {
 
 const KEYWORDS = [_][]const u8{
     "return",
+    "if",
+    "else",
 };
 
 fn isKeyword(identifier: []const u8) bool {
     for (KEYWORDS) |keyword| {
-        return std.mem.eql(u8, keyword, identifier);
+        if (std.mem.eql(u8, keyword, identifier)) {
+            return true;
+        }
     }
     return false;
 }
