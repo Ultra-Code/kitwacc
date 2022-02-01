@@ -40,6 +40,36 @@ fn incLabelCount(self: *CodeGenerator) usize {
 }
 
 fn genStmts(self: *CodeGenerator, node: *const AstNode) Error!void {
+    if (node.kind == .NK_LOOP) {
+        const num = self.incLabelCount();
+        const loop = node.value.loop;
+        if (loop.init) |init_stmt| {
+            try self.genStmts(init_stmt);
+        }
+
+        var begin_label_buf: [16]u8 = undefined;
+        const begin_label = try std.fmt.bufPrint(&begin_label_buf, ".L.begin.{d}", .{num});
+
+        try self.asm_.label(begin_label);
+
+        var end_label_buf: [16]u8 = undefined;
+        const end_label = try std.fmt.bufPrint(&end_label_buf, ".L.end_loop.{d}", .{num});
+
+        if (loop.condition) |condition| {
+            try self.generateAsm(condition);
+            //if condition is false jum to end
+            try self.asm_.cmp(.immediate_constant, 0, "%rax");
+            try self.asm_.jcc(.equal, end_label);
+        }
+
+        try self.genStmts(loop.body);
+
+        if (loop.increment) |increment| {
+            try self.generateAsm(increment);
+        }
+        try self.asm_.jmp(begin_label);
+        try self.asm_.label(end_label);
+    }
     if (node.kind == .NK_IF) {
         const label_num = self.incLabelCount();
         const if_statement = node.value.if_statement;
@@ -159,6 +189,7 @@ fn asmPrologue(self: *CodeGenerator, stack_size: usize) Error!void {
     try self.asm_.push("%rbp");
     try self.asm_.mov(.register, "%rsp", "%rbp");
     try self.asm_.sub(.immediate_constant, stack_size, "%rsp");
+    try self.asm_.comment("prologue end");
 }
 
 fn asmEpilogue(self: *CodeGenerator) Error!void {

@@ -25,6 +25,7 @@ const AstNodeKind = enum {
     NK_RETURN, // return statement
     NK_BLOCK, // { block }
     NK_IF, // if
+    NK_LOOP, // for or while
 };
 
 // Local variable
@@ -50,6 +51,14 @@ const Conditonal = struct {
     else_branch: ?*const AstTree.AstNode = null,
 };
 
+//for or while loop
+const Loop = struct {
+    init: ?*const AstTree.AstNode = null,
+    condition: ?*const AstTree.AstNode = null,
+    increment: ?*const AstTree.AstNode = null,
+    body: *const AstTree.AstNode,
+};
+
 pub const AstTree = struct {
 
     // AST node type
@@ -63,6 +72,7 @@ pub const AstTree = struct {
             identifier: *const Variable, // Used if node is an Identifier Token .ie kind == ND_VAR
             block: ExprList, // Block { ... }
             if_statement: Conditonal, //if statement
+            loop: Loop, //for or while loop
         };
     };
 
@@ -110,6 +120,18 @@ pub const AstTree = struct {
         var if_statement = self.createAstNode(kind);
         if_statement.value = AstNode.Value{ .if_statement = conditional_expression };
         return if_statement;
+    }
+
+    pub fn loopExpression(self: *AstTree, kind: AstNodeKind, loop: Loop) *const AstNode {
+        var loop_statment = self.createAstNode(kind);
+        loop_statment.value = AstNode.Value{ .loop = loop };
+        return loop_statment;
+    }
+
+    pub fn nullBlock(self: *AstTree) *const AstNode {
+        var null_block = self.createAstNode(.NK_BLOCK);
+        null_block.value = AstNode.Value{ .block = ExprList.init(self.allocator) };
+        return null_block;
     }
 
     // Assign offsets to local variables.
@@ -207,8 +229,10 @@ fn compoundStmt(self: *Parser, token: *const Token) ExprList {
 }
 
 /// stmt = "return" expr ";" | "{" compound-stmt |
-///       | "if" "(" expr ")" "{" stmt "}" ("else" "{" stmt "}")?
-///       $ expr_stmt
+///       | "if" "(" expr ")"  stmt  ("else" stmt )?
+///       | "for" "(" expr_stmt expr? ";" expr ")" stmt
+///       | "while" "(" expr ")" stmt
+///       | expr_stmt
 fn stmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
     if (self.isCurrentTokenEqualTo("return")) {
         const return_statement = self.nodes.unaryExpression(.NK_RETURN, self.expr(self.nextToken()));
@@ -241,11 +265,72 @@ fn stmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
             self.reportParserError("expected ( after if keyword but found {s}", .{self.currentToken().value.ident_name});
         }
     }
+
+    if (self.isCurrentTokenEqualTo("for")) {
+        var for_loop: Loop = Loop{ .init = undefined, .body = undefined };
+
+        if (self.expectToken(self.nextToken(), "(")) {
+            const init_statment = self.exprStmt(self.currentToken());
+            for_loop.init = init_statment;
+        } else {
+            self.reportParserError("expected '(' after 'for'  like 'for ('  but found 'for {s}'", .{self.currentToken().value.ident_name});
+        }
+
+        //if not for(init;;) .ie for (init;expr;)
+        if (!self.isCurrentTokenEqualTo(";")) {
+            const conditon_expr = self.expr(self.currentToken());
+            for_loop.condition = conditon_expr;
+        }
+        if (!self.expectCurrentTokenToMatch(";")) {
+            self.reportParserError("expected ';' after 'condition' like 'for (init; condition ;'  but found 'for (init; condition {s}'", .{self.currentToken().value.ident_name});
+        }
+
+        if (!self.isCurrentTokenEqualTo(")")) {
+            const increment_expr = self.expr(self.currentToken());
+            for_loop.increment = increment_expr;
+        }
+        if (!self.expectCurrentTokenToMatch(")")) {
+            self.reportParserError("expected ')' after 'inc' like 'for (init; condition ; inc )'  but found 'for (init; condition ; inc {s}'", .{self.currentToken().value.ident_name});
+        }
+
+        const loop_body = self.stmt(self.currentToken());
+        for_loop.body = loop_body;
+
+        return self.nodes.loopExpression(.NK_LOOP, for_loop);
+    }
+
+    if (self.isCurrentTokenEqualTo("while")) {
+        var while_loop: Loop = Loop{ .condition = undefined, .body = undefined };
+
+        if (self.expectToken(self.nextToken(), "(")) {
+            const conditon_expr = self.expr(self.currentToken());
+            while_loop.condition = conditon_expr;
+        } else {
+            self.reportParserError("expected '(' after 'while' like 'while (' but found 'while {s}'", .{self.currentToken().value.ident_name});
+        }
+
+        if (!self.expectCurrentTokenToMatch(")")) {
+            self.reportParserError("expected ')' after 'condition' like 'while ( condition )' but found 'while (condition {s}'", .{self.currentToken().value.ident_name});
+        }
+
+        const while_body = self.stmt(self.currentToken());
+        while_loop.body = while_body;
+
+        return self.nodes.loopExpression(.NK_LOOP, while_loop);
+    }
+
     return self.exprStmt(token);
 }
 
-// expr_stmt = expr ";"
+// expr_stmt = expr? ";"
 fn exprStmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
+    //.ie there is no expr
+    //null block are used in for (;;){stmt}
+    if (self.isCurrentTokenEqualTo(";")) {
+        //skip the current Token
+        _ = self.nextToken();
+        return self.nodes.nullBlock();
+    }
     const expr_stmt_node = self.nodes.unaryExpression(.NK_EXPR_STMT, self.expr(token));
     if (!self.expectCurrentTokenToMatch(";")) {
         self.reportParserError("expected statement to end with ';' but found {s}", .{self.currentToken().value.ident_name});
