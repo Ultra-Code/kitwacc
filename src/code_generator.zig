@@ -69,6 +69,7 @@ fn genStmts(self: *CodeGenerator, node: *const AstNode) Error!void {
         }
         try self.asm_.jmp(begin_label);
         try self.asm_.label(end_label);
+        return;
     }
     if (node.kind == .NK_IF) {
         const label_num = self.incLabelCount();
@@ -111,7 +112,7 @@ fn genStmts(self: *CodeGenerator, node: *const AstNode) Error!void {
         try self.generateAsm(node.rhs.?);
         return;
     }
-    std.log.err("invalid expression statement", .{});
+    reportError(node.token, "invalid statement", .{});
 }
 
 // Generate code for a given node.
@@ -175,7 +176,7 @@ fn generateAsm(self: *CodeGenerator, node: *const AstNode) Error!void {
             try self.asm_.movzb("%al", "%rax");
         },
         else => {
-            std.log.err("invalid ast node expression", .{});
+            reportError(node.token, "invalid expression", .{});
             return error.InvalidExpression;
         },
     }
@@ -207,5 +208,22 @@ fn genAbsoluteAddress(self: *CodeGenerator, node: *const AstNode) Error!void {
         try self.asm_.lea(node.value.identifier.rbp_offset, "%rbp", "%rax");
         return;
     }
-    std.log.err("Not an lvalue", .{});
+    reportError(node.token, "not an lvalue", .{});
+}
+
+fn reportError(token: *const parser.Token, comptime msg: []const u8, args: anytype) noreturn {
+    const error_msg = "\nError '{[token_name]s}' in '{[token_stream]s}' at {[token_location]d}";
+    const identifier_name = token.value.ident_name;
+    std.log.err(error_msg, .{
+        .token_name = identifier_name,
+        .token_stream = parser.TOKEN_STREAM,
+        .token_location = token.location,
+    });
+    const location_offset = 13;
+    const token_location = location_offset + identifier_name.len + token.location;
+    //add empty spaces till the character where the error starts
+    std.debug.print("{[spaces]s:>[width]}", .{ .spaces = " ", .width = token_location });
+    const format_msg = "^ " ++ msg ++ "\n";
+    std.debug.print(format_msg, args);
+    std.process.exit(4);
 }

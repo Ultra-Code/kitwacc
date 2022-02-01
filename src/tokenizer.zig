@@ -49,7 +49,7 @@ fn addToken(self: *Tokenizer, token: Token) void {
     self.tokens.append(token) catch OOMhandler();
 }
 
-pub fn reportTokenizerError(self: *const Tokenizer, error_slice: []const u8, comptime msg: []const u8, args: anytype) noreturn {
+fn reportTokenizerError(self: *const Tokenizer, error_slice: []const u8, comptime msg: []const u8, args: anytype) noreturn {
     const token_index = std.mem.indexOf(u8, self.stream, error_slice).?;
     const error_fmt = "\nError: Invalid Token '{s}' in '{s} at {d}\n";
     const position_of_stream_in_error_fmt = 28;

@@ -3,8 +3,6 @@ const Asm = @This();
 const space_width = 8;
 const space = " ";
 
-const Error = error{} || std.os.WriteError;
-
 output_file: std.fs.File,
 output_writer: std.fs.File.Writer,
 stack_depth: usize = 0,
@@ -19,7 +17,7 @@ pub fn deinit(self: *Asm) void {
 }
 
 /// push or put a register on the stack
-pub fn push(self: *Asm, register: []const u8) Error!void {
+pub fn push(self: *Asm, register: []const u8) !void {
     try self.output_writer.print("{[spaces]s:>[width]}push {[register]s}\n", .{
         .spaces = space,
         .width = space_width,
@@ -29,7 +27,7 @@ pub fn push(self: *Asm, register: []const u8) Error!void {
 }
 
 ///pop or remove a registor from the stack
-pub fn pop(self: *Asm, register: []const u8) Error!void {
+pub fn pop(self: *Asm, register: []const u8) !void {
     try self.output_writer.print("{[spaces]s:>[width]}pop {[register]s}\n", .{
         .spaces = space,
         .width = space_width,
@@ -57,7 +55,7 @@ pub fn mov(
     comptime operand_type: OperandType,
     source_operand: if (operand_type == OperandType.register) []const u8 else usize,
     destination_register: []const u8,
-) Error!void {
+) !void {
     switch (operand_type) {
         .immediate_constant => try self.output_writer.print("{[spaces]s:>[width]}mov ${[immediate_constant]d},{[register]s}\n", .{
             .spaces = space,
@@ -78,7 +76,7 @@ pub fn mov(
 
 ///Copies the contents of the source operand (register or memory location) to the destination operand (register) and
 ///zero extends the value.
-pub fn movzb(self: *Asm, source_byte_register: []const u8, destination_register: []const u8) Error!void {
+pub fn movzb(self: *Asm, source_byte_register: []const u8, destination_register: []const u8) !void {
     try self.output_writer.print("{[spaces]s:>[width]}movzb {[source_byte_register]s},{[destination_register]s}\n", .{
         .spaces = space,
         .width = space_width,
@@ -88,7 +86,7 @@ pub fn movzb(self: *Asm, source_byte_register: []const u8, destination_register:
 }
 
 ///load effective address of source and place it in destination
-pub fn lea(self: *Asm, offset: usize, source: []const u8, destination: []const u8) Error!void {
+pub fn lea(self: *Asm, offset: usize, source: []const u8, destination: []const u8) !void {
     try self.output_writer.print("{[spaces]s:>[width]}lea -{[offset]d}({[source]s}),{[destination]s}\n", .{
         .spaces = space,
         .width = space_width,
@@ -99,7 +97,7 @@ pub fn lea(self: *Asm, offset: usize, source: []const u8, destination: []const u
 }
 
 /// negate content of register
-pub fn neg(self: *Asm, register: []const u8) Error!void {
+pub fn neg(self: *Asm, register: []const u8) !void {
     try self.output_writer.print("{[spaces]s:>[width]}neg {[register]s}\n", .{
         .spaces = space,
         .width = space_width,
@@ -113,7 +111,7 @@ pub fn sub(
     comptime operand_type: OperandType,
     source_operand: SourceOperandType(operand_type),
     destination: []const u8,
-) Error!void {
+) !void {
     switch (operand_type) {
         .register => {
             try self.output_writer.print("{[spaces]s:>[width]}sub {[source]s},{[destination]s}\n", .{
@@ -135,7 +133,7 @@ pub fn sub(
 }
 
 ///add source to destination and store result in destination
-pub fn add(self: *Asm, source: []const u8, destination: []const u8) Error!void {
+pub fn add(self: *Asm, source: []const u8, destination: []const u8) !void {
     try self.output_writer.print("{[spaces]s:>[width]}add {[source]s},{[destination]s}\n", .{
         .spaces = space,
         .width = space_width,
@@ -146,7 +144,7 @@ pub fn add(self: *Asm, source: []const u8, destination: []const u8) Error!void {
 
 ///two operand form of imul
 ///multiply source by destination and store result in destination
-pub fn imul(self: *Asm, source: []const u8, destination: []const u8) Error!void {
+pub fn imul(self: *Asm, source: []const u8, destination: []const u8) !void {
     try self.output_writer.print("{[spaces]s:>[width]}imul {[source]s},{[destination]s}\n", .{
         .spaces = space,
         .width = space_width,
@@ -155,7 +153,7 @@ pub fn imul(self: *Asm, source: []const u8, destination: []const u8) Error!void 
     });
 }
 
-pub fn idiv(self: *Asm, divisor: []const u8) Error!void {
+pub fn idiv(self: *Asm, divisor: []const u8) !void {
     //https://stackoverflow.com/questions/38416593/why-should-edx-be-0-before-using-the-div-instruction/38416896#38416896
     //we are dividing a 128 dividend bit number by a 64 bit divisor number
     //so we must sign extend %rax into 128 bit RDX:RAX before dividing RDX:RAX with %rdi
@@ -177,7 +175,7 @@ pub fn idiv(self: *Asm, divisor: []const u8) Error!void {
 ///sets the status flags in the EFLAGS register according to the result
 ///The condition codes used by the Jcc, CMOVcc, and SETcc instructions
 ///are based on the results of a CMP instruction.
-pub fn cmp(self: *Asm, comptime operand_type: OperandType, left_operand: SourceOperandType(operand_type), right_operand: []const u8) Error!void {
+pub fn cmp(self: *Asm, comptime operand_type: OperandType, left_operand: SourceOperandType(operand_type), right_operand: []const u8) !void {
     switch (operand_type) {
         .register => {
             try self.output_writer.print("{[spaces]s:>[width]}cmp {[left_operand]s},{[right_operand]s}\n", .{
@@ -208,7 +206,7 @@ const Cc = enum {
 };
 
 ///set byte register base on conditional codes of  EFLAGS
-pub fn set(self: *Asm, cc: Cc, byte_register: []const u8) Error!void {
+pub fn set(self: *Asm, cc: Cc, byte_register: []const u8) !void {
     switch (cc) {
         Cc.equal => {
             try self.output_writer.print("{[spaces]s:>[width]}sete {[byte_register]s}\n", .{
@@ -256,7 +254,7 @@ pub fn set(self: *Asm, cc: Cc, byte_register: []const u8) Error!void {
 }
 
 ///ump if Condition Is Met
-pub fn jcc(self: *Asm, cc: Cc, byte_register: []const u8) Error!void {
+pub fn jcc(self: *Asm, cc: Cc, byte_register: []const u8) !void {
     switch (cc) {
         Cc.equal => {
             try self.output_writer.print("{[spaces]s:>[width]}je {[byte_register]s}\n", .{
@@ -303,7 +301,7 @@ pub fn jcc(self: *Asm, cc: Cc, byte_register: []const u8) Error!void {
     }
 }
 
-pub fn comment(self: *Asm, asm_comment: []const u8) Error!void {
+pub fn comment(self: *Asm, asm_comment: []const u8) !void {
     try self.output_writer.print(
         \\
         \\#{[comments]s}
@@ -311,7 +309,7 @@ pub fn comment(self: *Asm, asm_comment: []const u8) Error!void {
     , .{ .comments = asm_comment });
 }
 
-pub fn labelFunction(self: *Asm, func_name: []const u8) Error!void {
+pub fn labelFunction(self: *Asm, func_name: []const u8) !void {
     try self.output_writer.print(
         \\{[spaces]s:>[width]}.globl {[func_name]s}
         \\{[spaces]s:>[width]}.type  {[func_name]s}, @function
@@ -324,7 +322,7 @@ pub fn labelFunction(self: *Asm, func_name: []const u8) Error!void {
 }
 
 ///Add a label in asm output
-pub fn label(self: *Asm, name: []const u8) Error!void {
+pub fn label(self: *Asm, name: []const u8) !void {
     try self.output_writer.print(
         \\
         \\{[label_name]s}:
@@ -333,7 +331,7 @@ pub fn label(self: *Asm, name: []const u8) Error!void {
         .label_name = name,
     });
 }
-pub fn ret(self: *Asm) Error!void {
+pub fn ret(self: *Asm) !void {
     try self.output_writer.print(
         \\{[spaces]s:>[width]}ret
         \\
@@ -343,7 +341,7 @@ pub fn ret(self: *Asm) Error!void {
     });
 }
 
-pub fn jmp(self: *Asm, location: []const u8) Error!void {
+pub fn jmp(self: *Asm, location: []const u8) !void {
     try self.output_writer.print(
         \\{[space]s:>[width]}jmp {[location]s}
         \\
