@@ -117,6 +117,15 @@ fn genStmts(self: *CodeGenerator, node: *const AstNode) Error!void {
 
 // Generate code for a given node.
 fn generateAsm(self: *CodeGenerator, node: *const AstNode) Error!void {
+    if (node.kind == .NK_DEREF) {
+        try self.generateAsm(node.rhs.?);
+        try self.asm_.mov(.register, "(%rax)", "%rax");
+        return;
+    }
+    if (node.kind == .NK_ADDR) {
+        try self.genAbsoluteAddress(node.rhs.?);
+        return;
+    }
     //since these nodes are terminal nodes there are no other nodes on either sides of the tree
     //so we must return after generating code for them. These serve as the terminating condition
     //of the recursive descent
@@ -206,6 +215,10 @@ fn asmEpilogue(self: *CodeGenerator) Error!void {
 fn genAbsoluteAddress(self: *CodeGenerator, node: *const AstNode) Error!void {
     if (node.kind == .NK_VAR) {
         try self.asm_.lea(node.value.identifier.rbp_offset, "%rbp", "%rax");
+        return;
+    }
+    if (node.kind == .NK_DEREF) {
+        try self.generateAsm(node.rhs.?);
         return;
     }
     reportError(node.token, "not an lvalue", .{});

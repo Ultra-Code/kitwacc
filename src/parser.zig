@@ -26,6 +26,8 @@ const AstNodeKind = enum {
     NK_BLOCK, // { block }
     NK_IF, // if
     NK_LOOP, // for or while
+    NK_ADDR, // unary & operator .ie address operator
+    NK_DEREF, //unary * operator .ie pointer dereference
 };
 
 // Local variable
@@ -456,7 +458,7 @@ fn mul(self: *Parser, token: *const Token) *const AstTree.AstNode {
     }
 }
 
-// unary = ('+'|'-') unary | primary
+// unary = ('+'|'-'|'*'|'&') unary | primary
 fn unary(self: *Parser, token: *const Token) *const AstTree.AstNode {
     const start = token;
     if (self.isCurrentTokenEqualTo("+")) {
@@ -466,7 +468,14 @@ fn unary(self: *Parser, token: *const Token) *const AstTree.AstNode {
     if (self.isCurrentTokenEqualTo("-")) {
         return self.nodes.unaryExpression(.NK_NEG, self.unary(self.nextToken()), start);
     }
-    _ = token;
+
+    if (self.isCurrentTokenEqualTo("*")) {
+        return self.nodes.unaryExpression(.NK_DEREF, self.unary(self.nextToken()), start);
+    }
+
+    if (self.isCurrentTokenEqualTo("&")) {
+        return self.nodes.unaryExpression(.NK_ADDR, self.unary(self.nextToken()), start);
+    }
 
     return self.primary(self.currentToken());
 }
