@@ -1,7 +1,10 @@
 const std = @import("std");
 const cwd = std.fs.cwd();
-const parser = @import("parser.zig");
-const code_generator = @import("code_generator.zig");
+const Parser = @import("parser.zig");
+const Tokenizer = @import("tokenizer.zig");
+const CodeGenerator = @import("code_generator.zig");
+
+pub var TOKEN_STREAM: []const u8 = undefined;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -13,41 +16,30 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const args = try TokenStream.init(allocator);
+    const argv = try std.process.argsAlloc(allocator);
 
-    const program_name = args.input[0];
-    const stream = args.input[1];
-    if (args.input.len < 2) {
+    const program_name = argv[0];
+    TOKEN_STREAM = argv[1];
+    if (argv.len < 2) {
         std.log.err("{s} has invalid number of arguments.Expected 1 found 0", .{program_name});
         std.log.err("{s} call kitwacc with 1 argument", .{program_name});
         return error.InvalidNumberOfArguments;
     }
-    compiler(allocator, stream) catch |err|
+    compiler(allocator) catch |err|
         switch (err) {
         else => std.log.err("{s} error occured", .{@errorName(err)}),
     };
 }
 
-const TokenStream = struct {
-    input: []const []const u8,
-
-    /// The caller must free the returned slice
-    fn init(allocator: std.mem.Allocator) !TokenStream {
-        const args = try std.process.argsAlloc(allocator);
-        return TokenStream{ .input = args };
-    }
-};
-
-fn compiler(allocator: std.mem.Allocator, stream: []const u8) !void {
-    var Parser = parser.init(allocator, stream);
+fn compiler(allocator: std.mem.Allocator) !void {
     // Tokenize and parse.
-    const token = try Parser.tokenizeInput();
-    const ast_node = Parser.parse(token);
+    var tokenized_input = try Tokenizer.init(allocator).tokenize();
+    var ast_nodes = Parser.init(allocator, tokenized_input).parse();
 
-    var generator = try code_generator.init("test/output.s");
+    var generator = try CodeGenerator.init("test/output.s");
     defer generator.deinit();
     // Traverse the AST to emit assembly.
-    try generator.codegen(ast_node);
+    try generator.codegen(ast_nodes);
 }
 
 test "kitwacc compiler test suite" {

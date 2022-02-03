@@ -1,8 +1,17 @@
+//!An operator is left associative if it starts with a non-terminal on the left hand side
+//!.ie add = mul ("+" mul | "-" mul) or  relational = add ("<" add | "<=" add | ">" add | ">=" add)*
+//!And if it starts with a terminal on the right followed by a non terminal
+//!or is right recursive then it is right associative eg. assign = equality ('=' assign)? or unary = ('+'|'-'|'*'|'&') unary | primary
+//!The precedence of the operator is encoded by the depth of the recursive call to a non-terminal fn before getting to the
+//!operator which is the terminal. Meaning since primary in very down the stack it has the highest precedence and this
+//!reduces as you go up the stack to assign = equality ('=' assign)? and higher
 const std = @import("std");
 const Tokenizer = @import("tokenizer.zig");
 pub const Token = Tokenizer.Token;
+const TokenIterator = Tokenizer.TokenList.Iterator;
 const OOMhandler = Tokenizer.OOMhandler;
 const algods = @import("algods");
+const compiler = @import("main.zig");
 
 pub const Parser = @This();
 
@@ -19,7 +28,7 @@ const AstNodeKind = enum {
     NK_GT, // >
     NK_LE, // <=
     NK_GE, // >=
-    NK_EXPR_STMT, // Expression statement
+    NK_EXPR_STMT, // Expression statement .ie stmt separated by commas
     NK_ASSIGN, // =
     NK_VAR, // Variable
     NK_RETURN, // return statement
@@ -61,6 +70,15 @@ const Loop = struct {
     body: *const AstTree.AstNode,
 };
 
+const TypeKind = enum {
+    TY_INT,
+    TY_PTR,
+};
+const Type = struct {
+    kind: TypeKind,
+    base: *Type,
+};
+
 pub const AstTree = struct {
 
     // AST node type
@@ -68,7 +86,8 @@ pub const AstTree = struct {
         kind: AstNodeKind, // AstNode kind
         lhs: ?*const AstNode = null, // Left-hand side
         rhs: ?*const AstNode = null, // Right-hand side
-        token: *const Token, //A representative Token of the Node to improve error messages
+        token: Token, //A representative Token of the Node to improve error messages
+        type: *const Type, //Type, e.g. int or pointer to int
         value: Value,
         pub const Value = union {
             number: u64, // value of integer if kind == NK_NUM
@@ -88,51 +107,51 @@ pub const AstTree = struct {
         return .{ .allocator = allocator, .local_variables = VarList.init(allocator) };
     }
 
-    fn createAstNode(self: *AstTree, kind: AstNodeKind, token: *const Token) *AstNode {
+    fn createAstNode(self: *AstTree, kind: AstNodeKind, token: Token) *AstNode {
         var new_ast_node = self.allocator.create(AstNode) catch OOMhandler();
         new_ast_node.kind = kind;
         new_ast_node.token = token;
         return new_ast_node;
     }
 
-    pub fn binaryExpression(self: *AstTree, kind: AstNodeKind, lhs: *const AstNode, rhs: *const AstNode, token: *const Token) *const AstNode {
+    pub fn binaryExpression(self: *AstTree, kind: AstNodeKind, lhs: *const AstNode, rhs: *const AstNode, token: Token) *const AstNode {
         var binaray_node = self.createAstNode(kind, token);
         binaray_node.rhs = rhs;
         binaray_node.lhs = lhs;
         return binaray_node;
     }
 
-    pub fn number(self: *AstTree, value: u64, token: *const Token) *const AstNode {
+    pub fn number(self: *AstTree, value: u64, token: Token) *const AstNode {
         var num_terminal_node = self.createAstNode(.NK_NUM, token);
         num_terminal_node.value = AstNode.Value{ .number = value };
         return num_terminal_node;
     }
 
-    pub fn unaryExpression(self: *AstTree, kind: AstNodeKind, unary_expr: *const AstNode, token: *const Token) *const AstNode {
+    pub fn unaryExpression(self: *AstTree, kind: AstNodeKind, unary_expr: *const AstNode, token: Token) *const AstNode {
         var unary_node = self.createAstNode(kind, token);
         unary_node.rhs = unary_expr;
         return unary_node;
     }
 
-    pub fn blockExpression(self: *AstTree, kind: AstNodeKind, expression_list: ExprList, token: *const Token) *const AstNode {
+    pub fn blockExpression(self: *AstTree, kind: AstNodeKind, expression_list: ExprList, token: Token) *const AstNode {
         var compound_node = self.createAstNode(kind, token);
         compound_node.value = AstNode.Value{ .block = expression_list };
         return compound_node;
     }
 
-    pub fn conditionExpression(self: *AstTree, kind: AstNodeKind, conditional_expression: Conditonal, token: *const Token) *const AstNode {
+    pub fn conditionExpression(self: *AstTree, kind: AstNodeKind, conditional_expression: Conditonal, token: Token) *const AstNode {
         var if_statement = self.createAstNode(kind, token);
         if_statement.value = AstNode.Value{ .if_statement = conditional_expression };
         return if_statement;
     }
 
-    pub fn loopExpression(self: *AstTree, kind: AstNodeKind, loop: Loop, token: *const Token) *const AstNode {
+    pub fn loopExpression(self: *AstTree, kind: AstNodeKind, loop: Loop, token: Token) *const AstNode {
         var loop_statment = self.createAstNode(kind, token);
         loop_statment.value = AstNode.Value{ .loop = loop };
         return loop_statment;
     }
 
-    pub fn nullBlock(self: *AstTree, token: *const Token) *const AstNode {
+    pub fn nullBlock(self: *AstTree, token: Token) *const AstNode {
         var null_block = self.createAstNode(.NK_BLOCK, token);
         null_block.value = AstNode.Value{ .block = ExprList.init(self.allocator) };
         return null_block;
@@ -172,32 +191,25 @@ pub const AstTree = struct {
         return new_variable_identifier;
     }
 
-    pub fn variableAssignment(self: *AstTree, variable: *const Variable, token: *const Token) *const AstNode {
+    pub fn variableAssignment(self: *AstTree, variable: *const Variable, token: Token) *const AstNode {
         var variable_node = self.createAstNode(.NK_VAR, token);
         variable_node.value = AstNode.Value{ .identifier = variable };
         return variable_node;
     }
 };
 
-pub var TOKEN_STREAM: []const u8 = undefined;
-
 nodes: AstTree,
-tokenizer: Tokenizer,
+tokenizer: TokenIterator,
 statements: ExprList,
-items_position: usize = 0,
 
-pub fn init(allocator: std.mem.Allocator, input_token_stream: []const u8) Parser {
-    TOKEN_STREAM = input_token_stream;
+pub fn init(allocator: std.mem.Allocator, tokens: TokenIterator) Parser {
     return .{
         .nodes = AstTree.init(allocator),
-        .tokenizer = Tokenizer.init(allocator, TOKEN_STREAM),
+        .tokenizer = tokens,
         .statements = ExprList.init(allocator),
     };
 }
 
-pub fn tokenizeInput(self: *Parser) !*const Token {
-    return try self.tokenizer.tokenize();
-}
 // Round up `num` to the nearest multiple of `alignment`. For instance,
 // align_to(5, 8) returns 8 and align_to(11, 8) returns 16.
 fn alignTo(num: usize, alignment: usize) usize {
@@ -206,12 +218,12 @@ fn alignTo(num: usize, alignment: usize) usize {
 }
 
 //program = stmt
-pub fn parse(self: *Parser, token: *const Token) Function {
-    // NOTE: This can be replaced by a singly linked list of AstNode
-    if (self.expectCurrentTokenToMatch("{")) {
-        self.statements = self.compoundStmt(token);
+pub fn parse(self: *Parser) Function {
+    //we call nextToken to move from end to first token
+    if (self.expectToken(self.nextToken(), "{")) {
+        self.statements = self.compoundStmt(self.currentToken());
     } else {
-        self.reportParserError("expected program to start with {{ but found {s}", .{self.currentToken().value.ident_name});
+        reportParserError(self.currentToken(), "expected program to start with {{ but found {s}", .{self.currentToken().value.ident_name});
     }
     //After parsing the stream of tokens EOF must be the last token
     std.debug.assert(self.currentToken().kind == .TK_EOF);
@@ -223,14 +235,15 @@ pub fn parse(self: *Parser, token: *const Token) Function {
     };
 }
 //compound-stmt = stmt* "}"
-fn compoundStmt(self: *Parser, token: *const Token) ExprList {
+fn compoundStmt(self: *Parser, token: Token) ExprList {
     var compound_stmt = ExprList.init(self.nodes.allocator);
-    while (!self.isCurrentTokenEqualTo("}")) {
-        const statement = self.stmt(token);
+    _ = token;
+    while (!isEqual(self.currentToken(), "}")) {
+        const statement = self.stmt(self.currentToken());
         compound_stmt.append(statement) catch OOMhandler();
     }
-    if (!self.expectCurrentTokenToMatch("}")) {
-        self.reportParserError("expected block to end with }} but found {s}", .{self.currentToken().value.ident_name});
+    if (!self.expectToken(self.currentToken(), "}")) {
+        reportParserError(self.currentToken(), "expected block to end with }} but found {s}", .{self.currentToken().value.ident_name});
     }
     return compound_stmt;
 }
@@ -240,25 +253,25 @@ fn compoundStmt(self: *Parser, token: *const Token) ExprList {
 ///       | "for" "(" expr_stmt expr? ";" expr ")" stmt
 ///       | "while" "(" expr ")" stmt
 ///       | expr_stmt
-fn stmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
+fn stmt(self: *Parser, token: Token) *const AstTree.AstNode {
     const start = token;
-    if (self.isCurrentTokenEqualTo("return")) {
+    if (isEqual(token, "return")) {
         const return_statement = self.nodes.unaryExpression(.NK_RETURN, self.expr(self.nextToken()), start);
-        if (!self.expectCurrentTokenToMatch(";")) {
-            self.reportParserError("expected statement to end with ';' but found {s}", .{self.currentToken().value.ident_name});
+        if (!self.expectToken(self.currentToken(), ";")) {
+            reportParserError(self.currentToken(), "expected statement to end with ';' but found {s}", .{self.currentToken().value.ident_name});
         }
         return return_statement;
     }
-    if (self.isCurrentTokenEqualTo("{")) {
+    if (isEqual(token, "{")) {
         const compound_stmt = self.nodes.blockExpression(.NK_BLOCK, self.compoundStmt(self.nextToken()), start);
         return compound_stmt;
     }
-    if (self.isCurrentTokenEqualTo("if")) {
+    if (isEqual(token, "if")) {
         if (self.expectToken(self.nextToken(), "(")) {
             const if_expr = self.expr(self.currentToken());
-            if (self.expectCurrentTokenToMatch(")")) {
+            if (self.expectToken(self.currentToken(), ")")) {
                 const then_branch = self.stmt(self.currentToken());
-                if (self.isCurrentTokenEqualTo("else")) {
+                if (isEqual(self.currentToken(), "else")) {
                     const else_branch = self.stmt(self.nextToken());
                     const if_statement = self.nodes.conditionExpression(.NK_IF, .{ .if_expr = if_expr, .then_branch = then_branch, .else_branch = else_branch }, start);
                     return if_statement;
@@ -267,38 +280,38 @@ fn stmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
                     return if_statement;
                 }
             } else {
-                self.reportParserError("expected ) after  if ( expr  but found {s}", .{self.currentToken().value.ident_name});
+                reportParserError(self.currentToken(), "expected ) after  if ( expr  but found {s}", .{self.currentToken().value.ident_name});
             }
         } else {
-            self.reportParserError("expected ( after if keyword but found {s}", .{self.currentToken().value.ident_name});
+            reportParserError(self.currentToken(), "expected ( after if keyword but found {s}", .{self.currentToken().value.ident_name});
         }
     }
 
-    if (self.isCurrentTokenEqualTo("for")) {
+    if (isEqual(token, "for")) {
         var for_loop: Loop = Loop{ .init = undefined, .body = undefined };
 
         if (self.expectToken(self.nextToken(), "(")) {
             const init_statment = self.exprStmt(self.currentToken());
             for_loop.init = init_statment;
         } else {
-            self.reportParserError("expected '(' after 'for'  like 'for ('  but found 'for {s}'", .{self.currentToken().value.ident_name});
+            reportParserError(self.currentToken(), "expected '(' after 'for'  like 'for ('  but found 'for {s}'", .{self.currentToken().value.ident_name});
         }
 
         //if not for(init;;) .ie for (init;expr;)
-        if (!self.isCurrentTokenEqualTo(";")) {
+        if (!isEqual(self.currentToken(), ";")) {
             const conditon_expr = self.expr(self.currentToken());
             for_loop.condition = conditon_expr;
         }
-        if (!self.expectCurrentTokenToMatch(";")) {
-            self.reportParserError("expected ';' after 'condition' like 'for (init; condition ;'  but found 'for (init; condition {s}'", .{self.currentToken().value.ident_name});
+        if (!self.expectToken(self.currentToken(), ";")) {
+            reportParserError(self.currentToken(), "expected ';' after 'condition' like 'for (init; condition ;'  but found 'for (init; condition {s}'", .{self.currentToken().value.ident_name});
         }
 
-        if (!self.isCurrentTokenEqualTo(")")) {
+        if (!isEqual(self.currentToken(), ")")) {
             const increment_expr = self.expr(self.currentToken());
             for_loop.increment = increment_expr;
         }
-        if (!self.expectCurrentTokenToMatch(")")) {
-            self.reportParserError("expected ')' after 'inc' like 'for (init; condition ; inc )'  but found 'for (init; condition ; inc {s}'", .{self.currentToken().value.ident_name});
+        if (!self.expectToken(self.currentToken(), ")")) {
+            reportParserError(self.currentToken(), "expected ')' after 'inc' like 'for (init; condition ; inc )'  but found 'for (init; condition ; inc {s}'", .{self.currentToken().value.ident_name});
         }
 
         const loop_body = self.stmt(self.currentToken());
@@ -307,18 +320,18 @@ fn stmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
         return self.nodes.loopExpression(.NK_LOOP, for_loop, start);
     }
 
-    if (self.isCurrentTokenEqualTo("while")) {
+    if (isEqual(token, "while")) {
         var while_loop: Loop = Loop{ .condition = undefined, .body = undefined };
 
         if (self.expectToken(self.nextToken(), "(")) {
             const conditon_expr = self.expr(self.currentToken());
             while_loop.condition = conditon_expr;
         } else {
-            self.reportParserError("expected '(' after 'while' like 'while (' but found 'while {s}'", .{self.currentToken().value.ident_name});
+            reportParserError(self.currentToken(), "expected '(' after 'while' like 'while (' but found 'while {s}'", .{self.currentToken().value.ident_name});
         }
 
-        if (!self.expectCurrentTokenToMatch(")")) {
-            self.reportParserError("expected ')' after 'condition' like 'while ( condition )' but found 'while (condition {s}'", .{self.currentToken().value.ident_name});
+        if (!self.expectToken(self.currentToken(), ")")) {
+            reportParserError(self.currentToken(), "expected ')' after 'condition' like 'while ( condition )' but found 'while (condition {s}'", .{self.currentToken().value.ident_name});
         }
 
         const while_body = self.stmt(self.currentToken());
@@ -331,33 +344,33 @@ fn stmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
 }
 
 // expr_stmt = expr? ";"
-fn exprStmt(self: *Parser, token: *const Token) *const AstTree.AstNode {
+fn exprStmt(self: *Parser, token: Token) *const AstTree.AstNode {
     const start = token;
     //.ie there is no expr
     //null block are used in for (;;){stmt}
-    if (self.isCurrentTokenEqualTo(";")) {
+    if (isEqual(token, ";")) {
         //skip the current Token
         _ = self.nextToken();
         return self.nodes.nullBlock(start);
     }
     const expr_stmt_node = self.nodes.unaryExpression(.NK_EXPR_STMT, self.expr(token), start);
-    if (!self.expectCurrentTokenToMatch(";")) {
-        self.reportParserError("expected statement to end with ';' but found {s}", .{self.currentToken().value.ident_name});
+    if (!self.expectToken(self.currentToken(), ";")) {
+        reportParserError(self.currentToken(), "expected statement to end with ';' but found {s}", .{self.currentToken().value.ident_name});
     }
     return expr_stmt_node;
 }
 
 // expr = assign
-fn expr(self: *Parser, token: *const Token) *const AstTree.AstNode {
+fn expr(self: *Parser, token: Token) *const AstTree.AstNode {
     return self.assign(token);
 }
 
 //assign = equality ('=' assign)?
-fn assign(self: *Parser, token: *const Token) *const AstTree.AstNode {
+fn assign(self: *Parser, token: Token) *const AstTree.AstNode {
     const start = token;
     const equality_lhs_node = self.equality(token);
     var assignment_tree_node = equality_lhs_node;
-    if (self.isCurrentTokenEqualTo("=")) {
+    if (isEqual(self.currentToken(), "=")) {
         const assignment_rhs_node = self.assign(self.nextToken());
         assignment_tree_node = self.nodes.binaryExpression(.NK_ASSIGN, equality_lhs_node, assignment_rhs_node, start);
     }
@@ -365,18 +378,18 @@ fn assign(self: *Parser, token: *const Token) *const AstTree.AstNode {
 }
 
 //equality = relational ("==" relational | "!=" relational)*
-fn equality(self: *Parser, token: *const Token) *const AstTree.AstNode {
+fn equality(self: *Parser, token: Token) *const AstTree.AstNode {
     const start = token;
     const equality_lhs_node = self.relational(token);
     var equality_tree_node = equality_lhs_node;
 
     while (true) {
-        if (self.isCurrentTokenEqualTo("==")) {
+        if (isEqual(self.currentToken(), "==")) {
             const equality_rhs_node = self.relational(self.nextToken());
             equality_tree_node = self.nodes.binaryExpression(.NK_EQ, equality_lhs_node, equality_rhs_node, start);
             continue;
         }
-        if (self.isCurrentTokenEqualTo("!=")) {
+        if (isEqual(self.currentToken(), "!=")) {
             const equality_rhs_node = self.relational(self.nextToken());
             equality_tree_node = self.nodes.binaryExpression(.NK_NE, equality_lhs_node, equality_rhs_node, start);
             continue;
@@ -386,28 +399,28 @@ fn equality(self: *Parser, token: *const Token) *const AstTree.AstNode {
 }
 
 //relational = add ("<" add | "<=" add | ">" add | ">=" add)*
-fn relational(self: *Parser, token: *const Token) *const AstTree.AstNode {
+fn relational(self: *Parser, token: Token) *const AstTree.AstNode {
     const start = token;
     const relational_lhs_node = self.add(token);
     var relational_tree_node = relational_lhs_node;
 
     while (true) {
-        if (self.isCurrentTokenEqualTo("<")) {
+        if (isEqual(self.currentToken(), "<")) {
             const relational_rhs_node = self.add(self.nextToken());
             relational_tree_node = self.nodes.binaryExpression(.NK_LT, relational_lhs_node, relational_rhs_node, start);
             continue;
         }
-        if (self.isCurrentTokenEqualTo("<=")) {
+        if (isEqual(self.currentToken(), "<=")) {
             const relational_rhs_node = self.add(self.nextToken());
             relational_tree_node = self.nodes.binaryExpression(.NK_LE, relational_lhs_node, relational_rhs_node, start);
             continue;
         }
-        if (self.isCurrentTokenEqualTo(">")) {
+        if (isEqual(self.currentToken(), ">")) {
             const relational_rhs_node = self.add(self.nextToken());
             relational_tree_node = self.nodes.binaryExpression(.NK_GT, relational_lhs_node, relational_rhs_node, start);
             continue;
         }
-        if (self.isCurrentTokenEqualTo(">=")) {
+        if (isEqual(self.currentToken(), ">=")) {
             const relational_rhs_node = self.add(self.nextToken());
             relational_tree_node = self.nodes.binaryExpression(.NK_GE, relational_lhs_node, relational_rhs_node, start);
             continue;
@@ -415,19 +428,20 @@ fn relational(self: *Parser, token: *const Token) *const AstTree.AstNode {
         return relational_tree_node;
     }
 }
-// add = mul ("+" mul | "-" mul)
-pub fn add(self: *Parser, token: *const Token) *const AstTree.AstNode {
+
+/// add = mul ("+" mul | "-" mul)
+fn add(self: *Parser, token: Token) *const AstTree.AstNode {
     const start = token;
     const lhs_node = self.mul(token);
     var next_lhs_node = lhs_node;
     while (true) {
-        if (self.isCurrentTokenEqualTo("+")) {
+        if (isEqual(self.currentToken(), "+")) {
             const rhs_node = self.mul(self.nextToken());
             next_lhs_node = self.nodes.binaryExpression(.NK_ADD, next_lhs_node, rhs_node, start);
             continue;
         }
 
-        if (self.isCurrentTokenEqualTo("-")) {
+        if (isEqual(self.currentToken(), "-")) {
             const rhs_node = self.mul(self.nextToken());
             next_lhs_node = self.nodes.binaryExpression(.NK_SUB, next_lhs_node, rhs_node, start);
             continue;
@@ -436,19 +450,19 @@ pub fn add(self: *Parser, token: *const Token) *const AstTree.AstNode {
     }
 }
 
-//  mul = unary ("*" unary | "/" unary)*
-fn mul(self: *Parser, token: *const Token) *const AstTree.AstNode {
+///  mul = unary ("*" unary | "/" unary)*
+fn mul(self: *Parser, token: Token) *const AstTree.AstNode {
     const start = token;
     const lhs_node = self.unary(token);
     var next_lhs_node = lhs_node;
     while (true) {
-        if (self.isCurrentTokenEqualTo("*")) {
+        if (isEqual(self.currentToken(), "*")) {
             const rhs_node = self.unary(self.nextToken());
             next_lhs_node = self.nodes.binaryExpression(.NK_MUL, next_lhs_node, rhs_node, start);
             continue;
         }
 
-        if (self.isCurrentTokenEqualTo("/")) {
+        if (isEqual(self.currentToken(), "/")) {
             const rhs_node = self.unary(self.nextToken());
             next_lhs_node = self.nodes.binaryExpression(.NK_DIV, next_lhs_node, rhs_node, start);
             continue;
@@ -458,36 +472,35 @@ fn mul(self: *Parser, token: *const Token) *const AstTree.AstNode {
     }
 }
 
-// unary = ('+'|'-'|'*'|'&') unary | primary
-fn unary(self: *Parser, token: *const Token) *const AstTree.AstNode {
+/// unary = ('+'|'-'|'*'|'&') unary | primary
+fn unary(self: *Parser, token: Token) *const AstTree.AstNode {
     const start = token;
-    if (self.isCurrentTokenEqualTo("+")) {
+    if (isEqual(token, "+")) {
         return self.unary(self.nextToken());
     }
 
-    if (self.isCurrentTokenEqualTo("-")) {
+    if (isEqual(token, "-")) {
         return self.nodes.unaryExpression(.NK_NEG, self.unary(self.nextToken()), start);
     }
 
-    if (self.isCurrentTokenEqualTo("*")) {
+    if (isEqual(token, "*")) {
         return self.nodes.unaryExpression(.NK_DEREF, self.unary(self.nextToken()), start);
     }
 
-    if (self.isCurrentTokenEqualTo("&")) {
+    if (isEqual(token, "&")) {
         return self.nodes.unaryExpression(.NK_ADDR, self.unary(self.nextToken()), start);
     }
 
-    return self.primary(self.currentToken());
+    return self.primary(token);
 }
 
 // primary = "(" expr ")" | IDENTIFIER | NUM
-fn primary(self: *Parser, token: *const Token) *const AstTree.AstNode {
+fn primary(self: *Parser, token: Token) *const AstTree.AstNode {
     const start = token;
-    if (self.isCurrentTokenEqualTo("(")) {
+    if (isEqual(token, "(")) {
         const expr_node = self.expr(self.nextToken());
-        if (self.expectCurrentTokenToMatch(")")) {} else {
-            self.reportParserError("expected token to be ) but found {}", .{self.currentToken().value});
-            self.reportParserError("Terminal ( must end with a corresponding )", .{});
+        if (!self.expectToken(self.currentToken(), ")")) {
+            reportParserError(self.currentToken(), "expected ) after 'expr' like '( expr )' but found  '( expr {}'", .{self.currentToken().value});
         }
         return expr_node;
     }
@@ -506,16 +519,15 @@ fn primary(self: *Parser, token: *const Token) *const AstTree.AstNode {
         _ = self.nextToken();
         return num_node;
     }
-    self.reportParserError("Expected an ( expression ) , variable assignment or a number", .{});
+    reportParserError(token, "Expected an ( expression ) , variable assignment or a number", .{});
 }
 
-fn reportParserError(self: *const Parser, comptime msg: []const u8, args: anytype) noreturn {
-    const token = self.currentToken();
+fn reportParserError(token: Token, comptime msg: []const u8, args: anytype) noreturn {
     const error_msg = "\nInvalid Parse Token '{[token_name]s}' in '{[token_stream]s}' at {[token_location]d}";
     const identifier_name = token.value.ident_name;
     std.log.err(error_msg, .{
         .token_name = identifier_name,
-        .token_stream = TOKEN_STREAM,
+        .token_stream = compiler.TOKEN_STREAM,
         .token_location = token.location,
     });
     const location_offset = 27;
@@ -528,8 +540,7 @@ fn reportParserError(self: *const Parser, comptime msg: []const u8, args: anytyp
 }
 
 ///check if current token matches terminal
-fn isCurrentTokenEqualTo(self: *const Parser, terminal: []const u8) bool {
-    const token = self.currentToken();
+fn isEqual(token: Token, terminal: []const u8) bool {
     if (token.kind != .TK_NUM) {
         return std.mem.eql(u8, token.value.ident_name, terminal);
     }
@@ -542,7 +553,7 @@ fn isCurrentTokenEqualTo(self: *const Parser, terminal: []const u8) bool {
 }
 
 ///consumes token if it matches terminal.
-fn expectToken(self: *Parser, token: *const Token, terminal: []const u8) bool {
+fn expectToken(self: *Parser, token: Token, terminal: []const u8) bool {
     if (token.kind != .TK_NUM) {
         const match = std.mem.eql(u8, token.value.ident_name, terminal);
         if (match) {
@@ -561,18 +572,12 @@ fn expectToken(self: *Parser, token: *const Token, terminal: []const u8) bool {
     }
 }
 
-///consume current Token if it matches the terminal
-fn expectCurrentTokenToMatch(self: *Parser, terminal: []const u8) bool {
-    return self.expectToken(self.currentToken(), terminal);
-}
-
 //look at current token
-pub fn currentToken(self: *const Parser) *const Token {
-    return &self.tokenizer.tokens.items[self.items_position];
+pub fn currentToken(self: *const Parser) Token {
+    return self.tokenizer.current();
 }
 
 //consume next token in the input stream
-fn nextToken(self: *Parser) *const Token {
-    self.items_position += 1;
-    return &self.tokenizer.tokens.items[self.items_position];
+fn nextToken(self: *Parser) Token {
+    return self.tokenizer.next().?;
 }

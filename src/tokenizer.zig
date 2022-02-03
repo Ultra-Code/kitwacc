@@ -1,5 +1,7 @@
 const std = @import("std");
 const fmt = std.fmt;
+const algods = @import("algods");
+const compiler = @import("main.zig");
 
 const TokenKind = enum {
     TK_IDENT, // Identifiers
@@ -20,6 +22,7 @@ pub const Token = struct {
 };
 
 const Tokenizer = @This();
+pub const TokenList = algods.linked_list.SinglyCircularList(Token);
 
 const Error = error{
     TerminalMismatch,
@@ -30,17 +33,13 @@ const Error = error{
 pub fn OOMhandler() noreturn {
     std.log.err("allocator has run out of memory", .{});
     std.debug.panic("Out of Memory condition", .{});
-    std.process.exit(4);
+    std.process.exit(-1);
 }
+tokens: TokenList, // List of tokens
 
-tokens: std.ArrayList(Token), // List of tokens
-stream: []const u8,
-position_in_stream: usize = 0,
-
-pub fn init(allocator: std.mem.Allocator, input_stream: []const u8) Tokenizer {
+pub fn init(allocator: std.mem.Allocator) Tokenizer {
     return Tokenizer{
-        .tokens = std.ArrayList(Token).init(allocator),
-        .stream = input_stream,
+        .tokens = TokenList.init(allocator),
     };
 }
 
@@ -49,13 +48,13 @@ fn addToken(self: *Tokenizer, token: Token) void {
     self.tokens.append(token) catch OOMhandler();
 }
 
-fn reportTokenizerError(self: *const Tokenizer, error_slice: []const u8, comptime msg: []const u8, args: anytype) noreturn {
-    const token_index = std.mem.indexOf(u8, self.stream, error_slice).?;
+fn reportTokenizerError(error_slice: []const u8, comptime msg: []const u8, args: anytype) noreturn {
+    const token_index = std.mem.indexOf(u8, compiler.TOKEN_STREAM, error_slice).?;
     const error_fmt = "\nError: Invalid Token '{s}' in '{s} at {d}\n";
     const position_of_stream_in_error_fmt = 28;
     const error_token_start_location = error_slice.len + position_of_stream_in_error_fmt;
     const actual_location = error_token_start_location + token_index;
-    std.debug.print(error_fmt, .{ error_slice, self.stream, token_index });
+    std.debug.print(error_fmt, .{ error_slice, compiler.TOKEN_STREAM, token_index });
     std.debug.print("{[spaces]s:>[width]}", .{ .spaces = " ", .width = actual_location });
     const format_msg = "^ " ++ msg ++ "\n";
     std.debug.print(format_msg, args);
@@ -110,13 +109,12 @@ fn isKeyword(identifier: []const u8) bool {
 }
 
 // Tokenize `peek` and returns new tokens.
-pub fn tokenize(self: *Tokenizer) !*const Token {
-    const peek = self.stream;
+pub fn tokenize(self: *Tokenizer) !TokenList.Iterator {
+    const peek = compiler.TOKEN_STREAM;
     var index: usize = 0;
     //condition to prevent out of bound index but allow procession of last token
     while (index < peek.len) : ({
         index += 1;
-        self.position_in_stream = index;
     }) {
         const value = peek[index];
         // Numeric literal
@@ -226,7 +224,7 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
         }
 
         const bad_token = &[_]u8{value};
-        self.reportTokenizerError(bad_token, "expected number or punctuation or identifier but found {s}", .{bad_token});
+        reportTokenizerError(bad_token, "expected number or punctuation or identifier but found {s}", .{bad_token});
         return error.InvalidToken;
     }
 
@@ -235,5 +233,5 @@ pub fn tokenize(self: *Tokenizer) !*const Token {
         .value = Token.Value{ .ident_name = "EOF" },
         .location = index,
     });
-    return &self.tokens.items[0];
+    return self.tokens.iterator();
 }

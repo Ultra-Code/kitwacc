@@ -1,5 +1,6 @@
 const std = @import("std");
 const parser = @import("parser.zig");
+const compiler = @import("main.zig");
 const AstNode = parser.AstTree.AstNode;
 const Function = parser.Function;
 const ExprList = parser.ExprList;
@@ -224,12 +225,12 @@ fn genAbsoluteAddress(self: *CodeGenerator, node: *const AstNode) Error!void {
     reportError(node.token, "not an lvalue", .{});
 }
 
-fn reportError(token: *const parser.Token, comptime msg: []const u8, args: anytype) noreturn {
+fn reportError(token: parser.Token, comptime msg: []const u8, args: anytype) noreturn {
     const error_msg = "\nError '{[token_name]s}' in '{[token_stream]s}' at {[token_location]d}";
     const identifier_name = token.value.ident_name;
     std.log.err(error_msg, .{
         .token_name = identifier_name,
-        .token_stream = parser.TOKEN_STREAM,
+        .token_stream = compiler.TOKEN_STREAM,
         .token_location = token.location,
     });
     const location_offset = 13;
