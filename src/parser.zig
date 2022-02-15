@@ -12,6 +12,8 @@ const TokenIterator = Tokenizer.TokenList.Iterator;
 const OOMhandler = Tokenizer.OOMhandler;
 const algods = @import("algods");
 const compiler = @import("main.zig");
+const types = @import("type.zig");
+const Type = types.Type;
 
 pub const Parser = @This();
 
@@ -46,8 +48,8 @@ pub const Variable = struct {
 };
 
 //I use a SinglyCircularList because appending doesn't require node traversal
-pub const ExprList = algods.linked_list.SinglyCircularList(*const AstTree.AstNode);
-pub const VarList = algods.linked_list.SinglyCircularList(*const Variable);
+pub const ExprList = algods.linked_list.SinglyCircularList(*AstTree.AstNode);
+pub const VarList = algods.linked_list.SinglyCircularList(Variable);
 
 pub const Function = struct {
     body: ExprList,
@@ -57,26 +59,17 @@ pub const Function = struct {
 
 //if statement
 const Conditonal = struct {
-    if_expr: *const AstTree.AstNode,
-    then_branch: *const AstTree.AstNode,
-    else_branch: ?*const AstTree.AstNode = null,
+    if_expr: *AstTree.AstNode,
+    then_branch: *AstTree.AstNode,
+    else_branch: ?*AstTree.AstNode = null,
 };
 
 //for or while loop
 const Loop = struct {
-    init: ?*const AstTree.AstNode = null,
-    condition: ?*const AstTree.AstNode = null,
-    increment: ?*const AstTree.AstNode = null,
-    body: *const AstTree.AstNode,
-};
-
-const TypeKind = enum {
-    TY_INT,
-    TY_PTR,
-};
-const Type = struct {
-    kind: TypeKind,
-    base: *Type,
+    init: ?*AstTree.AstNode = null,
+    condition: ?*AstTree.AstNode = null,
+    increment: ?*AstTree.AstNode = null,
+    body: *AstTree.AstNode,
 };
 
 pub const AstTree = struct {
@@ -84,17 +77,18 @@ pub const AstTree = struct {
     // AST node type
     pub const AstNode = struct {
         kind: AstNodeKind, // AstNode kind
-        lhs: ?*const AstNode = null, // Left-hand side
-        rhs: ?*const AstNode = null, // Right-hand side
+        lhs: ?*AstNode = null, // Left-hand side
+        rhs: ?*AstNode = null, // Right-hand side
         token: Token, //A representative Token of the Node to improve error messages
-        type: *const Type, //Type, e.g. int or pointer to int
-        value: Value,
-        pub const Value = union {
+        type: ?Type = null, //Type, e.g. int or pointer to int
+        value: Value = .{ .no_value = true },
+        const Value = union(enum) {
             number: u64, // value of integer if kind == NK_NUM
-            identifier: *const Variable, // Used if node is an Identifier Token .ie kind == ND_VAR
+            identifier: Variable, // Used if node is an Identifier Token .ie kind == ND_VAR
             block: ExprList, // Block { ... }
             if_statement: Conditonal, //if statement
             loop: Loop, //for or while loop
+            no_value: bool,
         };
     };
 
@@ -109,49 +103,114 @@ pub const AstTree = struct {
 
     fn createAstNode(self: *AstTree, kind: AstNodeKind, token: Token) *AstNode {
         var new_ast_node = self.allocator.create(AstNode) catch OOMhandler();
+        //default initialize default fileds from undefined values
+        new_ast_node.lhs = null;
+        new_ast_node.rhs = null;
+        new_ast_node.type = null;
+        new_ast_node.value = AstNode.Value{ .no_value = true };
         new_ast_node.kind = kind;
         new_ast_node.token = token;
         return new_ast_node;
     }
+    // In C, `+` operator is overloaded to perform the pointer arithmetic.
+    // If p is a pointer, p+n adds not n but sizeof(*p)*n to the value of p,
+    // so that p+n points to the location n elements (not bytes) ahead of p.
+    // In other words, we need to scale an integer value before adding to a
+    // pointer value. This function takes care of the scaling.
+    fn addExpression(self: *AstTree, lhs: *AstNode, rhs: *AstNode, token: Token) *AstNode {
+        types.addType(lhs);
+        types.addType(rhs);
+        //num + num
+        if (lhs.type.?.isInt() and rhs.type.?.isInt()) {
+            return self.binaryExpression(.NK_ADD, lhs, rhs, token);
+        }
+        // Canonicalize `num + ptr` to `ptr + num`.
+        if (!lhs.type.?.isPtr() and rhs.type.?.isPtr()) {
+            std.mem.swap(AstNode, lhs, rhs);
+        }
 
-    pub fn binaryExpression(self: *AstTree, kind: AstNodeKind, lhs: *const AstNode, rhs: *const AstNode, token: Token) *const AstNode {
+        if (lhs.type.?.isPtr() and rhs.type.?.isInt()) {
+            //ptr + num
+            //number is scaled by 8 .ie assuming 64bit
+            const new_rhs = self.binaryExpression(.NK_MUL, rhs, self.number(8, token), token);
+            //.NK_SUB because we need to subtract the scaled number for the stack pointer
+            return self.binaryExpression(.NK_SUB, lhs, new_rhs, token);
+        }
+
+        //&num + &num is not allowed
+        // if (lhs.type.?.isPtr() and rhs.type.?.isPtr())
+        reportParserError(token, "invalid operands. expected &lhs + num but found &lhs + &num", .{});
+    }
+
+    // Like `+`, `-` is overloaded for the pointer type.
+    fn subExpression(self: *AstTree, lhs: *AstNode, rhs: *AstNode, token: Token) *AstNode {
+        types.addType(lhs);
+        types.addType(rhs);
+
+        //num - num
+        if (lhs.type.?.isInt() and rhs.type.?.isInt()) {
+            return self.binaryExpression(.NK_SUB, lhs, rhs, token);
+        }
+
+        //ptr - num
+        if (lhs.type.?.isPtr() and rhs.type.?.isInt()) {
+            var scaled_rhs = self.binaryExpression(.NK_MUL, rhs, self.number(8, token), token);
+            types.addType(scaled_rhs);
+            var current_lhs = self.binaryExpression(.NK_ADD, lhs, scaled_rhs, token);
+            current_lhs.type = lhs.type;
+            return current_lhs;
+        }
+
+        // ptr - ptr, which returns how many elements are between the two.
+        if (lhs.type.?.isPtr() and rhs.type.?.isPtr()) {
+            //sub rhs from lhs because rhs is usually at a higher address than lhs
+            //so we don't get negative values
+            var bytes_btw_lhs_rhs = self.binaryExpression(.NK_SUB, rhs, lhs, token);
+            bytes_btw_lhs_rhs.type = types.int_ty;
+            return self.binaryExpression(.NK_DIV, bytes_btw_lhs_rhs, self.number(8, token), token);
+        }
+
+        reportParserError(token, "invalid subtraction  operands", .{});
+    }
+
+    fn binaryExpression(self: *AstTree, kind: AstNodeKind, lhs: *AstNode, rhs: *AstNode, token: Token) *AstNode {
         var binaray_node = self.createAstNode(kind, token);
         binaray_node.rhs = rhs;
         binaray_node.lhs = lhs;
         return binaray_node;
     }
 
-    pub fn number(self: *AstTree, value: u64, token: Token) *const AstNode {
+    fn number(self: *AstTree, value: u64, token: Token) *AstNode {
         var num_terminal_node = self.createAstNode(.NK_NUM, token);
         num_terminal_node.value = AstNode.Value{ .number = value };
         return num_terminal_node;
     }
 
-    pub fn unaryExpression(self: *AstTree, kind: AstNodeKind, unary_expr: *const AstNode, token: Token) *const AstNode {
+    fn unaryExpression(self: *AstTree, kind: AstNodeKind, unary_expr: *AstNode, token: Token) *AstNode {
         var unary_node = self.createAstNode(kind, token);
         unary_node.rhs = unary_expr;
         return unary_node;
     }
 
-    pub fn blockExpression(self: *AstTree, kind: AstNodeKind, expression_list: ExprList, token: Token) *const AstNode {
+    fn blockExpression(self: *AstTree, kind: AstNodeKind, expression_list: ExprList, token: Token) *AstNode {
         var compound_node = self.createAstNode(kind, token);
         compound_node.value = AstNode.Value{ .block = expression_list };
         return compound_node;
     }
 
-    pub fn conditionExpression(self: *AstTree, kind: AstNodeKind, conditional_expression: Conditonal, token: Token) *const AstNode {
+    fn conditionExpression(self: *AstTree, kind: AstNodeKind, conditional_expression: Conditonal, token: Token) *AstNode {
         var if_statement = self.createAstNode(kind, token);
         if_statement.value = AstNode.Value{ .if_statement = conditional_expression };
         return if_statement;
     }
 
-    pub fn loopExpression(self: *AstTree, kind: AstNodeKind, loop: Loop, token: Token) *const AstNode {
+    fn loopExpression(self: *AstTree, kind: AstNodeKind, loop: Loop, token: Token) *AstNode {
         var loop_statment = self.createAstNode(kind, token);
         loop_statment.value = AstNode.Value{ .loop = loop };
         return loop_statment;
     }
 
-    pub fn nullBlock(self: *AstTree, token: Token) *const AstNode {
+    fn nullBlock(self: *AstTree, token: Token) *AstNode {
         var null_block = self.createAstNode(.NK_BLOCK, token);
         null_block.value = AstNode.Value{ .block = ExprList.init(self.allocator) };
         return null_block;
@@ -167,7 +226,7 @@ pub const AstTree = struct {
         return offset;
     }
 
-    fn findVariable(self: *const AstTree, variable_name: []const u8) ?*const Variable {
+    fn findVariable(self: AstTree, variable_name: []const u8) ?Variable {
         // Traverse forwards.
         var it = self.local_variables.iterator();
         while (it.next()) |variable| {
@@ -178,20 +237,17 @@ pub const AstTree = struct {
         return null;
     }
 
-    pub fn createVariable(self: *AstTree, name: []const u8) *Variable {
-        var new_variable_identifier = self.allocator.create(Variable) catch OOMhandler();
-        new_variable_identifier.name = name;
-        new_variable_identifier.rbp_offset = offset: {
+    fn createVariable(self: *AstTree, name: []const u8) Variable {
+        return Variable{ .name = name, .rbp_offset = offset: {
             if (self.findVariable(name)) |variable_exist| {
                 break :offset variable_exist.rbp_offset;
             } else {
                 break :offset self.nextlvarOffsets();
             }
-        };
-        return new_variable_identifier;
+        } };
     }
 
-    pub fn variableAssignment(self: *AstTree, variable: *const Variable, token: Token) *const AstNode {
+    fn variableAssignment(self: *AstTree, variable: Variable, token: Token) *AstNode {
         var variable_node = self.createAstNode(.NK_VAR, token);
         variable_node.value = AstNode.Value{ .identifier = variable };
         return variable_node;
@@ -253,7 +309,7 @@ fn compoundStmt(self: *Parser, token: Token) ExprList {
 ///       | "for" "(" expr_stmt expr? ";" expr ")" stmt
 ///       | "while" "(" expr ")" stmt
 ///       | expr_stmt
-fn stmt(self: *Parser, token: Token) *const AstTree.AstNode {
+fn stmt(self: *Parser, token: Token) *AstTree.AstNode {
     const start = token;
     if (isEqual(token, "return")) {
         const return_statement = self.nodes.unaryExpression(.NK_RETURN, self.expr(self.nextToken()), start);
@@ -344,7 +400,7 @@ fn stmt(self: *Parser, token: Token) *const AstTree.AstNode {
 }
 
 // expr_stmt = expr? ";"
-fn exprStmt(self: *Parser, token: Token) *const AstTree.AstNode {
+fn exprStmt(self: *Parser, token: Token) *AstTree.AstNode {
     const start = token;
     //.ie there is no expr
     //null block are used in for (;;){stmt}
@@ -361,12 +417,12 @@ fn exprStmt(self: *Parser, token: Token) *const AstTree.AstNode {
 }
 
 // expr = assign
-fn expr(self: *Parser, token: Token) *const AstTree.AstNode {
+fn expr(self: *Parser, token: Token) *AstTree.AstNode {
     return self.assign(token);
 }
 
 //assign = equality ('=' assign)?
-fn assign(self: *Parser, token: Token) *const AstTree.AstNode {
+fn assign(self: *Parser, token: Token) *AstTree.AstNode {
     const start = token;
     const equality_lhs_node = self.equality(token);
     var assignment_tree_node = equality_lhs_node;
@@ -378,7 +434,7 @@ fn assign(self: *Parser, token: Token) *const AstTree.AstNode {
 }
 
 //equality = relational ("==" relational | "!=" relational)*
-fn equality(self: *Parser, token: Token) *const AstTree.AstNode {
+fn equality(self: *Parser, token: Token) *AstTree.AstNode {
     const start = token;
     const equality_lhs_node = self.relational(token);
     var equality_tree_node = equality_lhs_node;
@@ -399,7 +455,7 @@ fn equality(self: *Parser, token: Token) *const AstTree.AstNode {
 }
 
 //relational = add ("<" add | "<=" add | ">" add | ">=" add)*
-fn relational(self: *Parser, token: Token) *const AstTree.AstNode {
+fn relational(self: *Parser, token: Token) *AstTree.AstNode {
     const start = token;
     const relational_lhs_node = self.add(token);
     var relational_tree_node = relational_lhs_node;
@@ -430,20 +486,20 @@ fn relational(self: *Parser, token: Token) *const AstTree.AstNode {
 }
 
 /// add = mul ("+" mul | "-" mul)
-fn add(self: *Parser, token: Token) *const AstTree.AstNode {
+fn add(self: *Parser, token: Token) *AstTree.AstNode {
     const start = token;
     const lhs_node = self.mul(token);
     var next_lhs_node = lhs_node;
     while (true) {
         if (isEqual(self.currentToken(), "+")) {
             const rhs_node = self.mul(self.nextToken());
-            next_lhs_node = self.nodes.binaryExpression(.NK_ADD, next_lhs_node, rhs_node, start);
+            next_lhs_node = self.nodes.addExpression(next_lhs_node, rhs_node, start);
             continue;
         }
 
         if (isEqual(self.currentToken(), "-")) {
             const rhs_node = self.mul(self.nextToken());
-            next_lhs_node = self.nodes.binaryExpression(.NK_SUB, next_lhs_node, rhs_node, start);
+            next_lhs_node = self.nodes.subExpression(next_lhs_node, rhs_node, start);
             continue;
         }
         return next_lhs_node;
@@ -451,7 +507,7 @@ fn add(self: *Parser, token: Token) *const AstTree.AstNode {
 }
 
 ///  mul = unary ("*" unary | "/" unary)*
-fn mul(self: *Parser, token: Token) *const AstTree.AstNode {
+fn mul(self: *Parser, token: Token) *AstTree.AstNode {
     const start = token;
     const lhs_node = self.unary(token);
     var next_lhs_node = lhs_node;
@@ -473,7 +529,7 @@ fn mul(self: *Parser, token: Token) *const AstTree.AstNode {
 }
 
 /// unary = ('+'|'-'|'*'|'&') unary | primary
-fn unary(self: *Parser, token: Token) *const AstTree.AstNode {
+fn unary(self: *Parser, token: Token) *AstTree.AstNode {
     const start = token;
     if (isEqual(token, "+")) {
         return self.unary(self.nextToken());
@@ -495,7 +551,7 @@ fn unary(self: *Parser, token: Token) *const AstTree.AstNode {
 }
 
 // primary = "(" expr ")" | IDENTIFIER | NUM
-fn primary(self: *Parser, token: Token) *const AstTree.AstNode {
+fn primary(self: *Parser, token: Token) *AstTree.AstNode {
     const start = token;
     if (isEqual(token, "(")) {
         const expr_node = self.expr(self.nextToken());
@@ -573,7 +629,7 @@ fn expectToken(self: *Parser, token: Token, terminal: []const u8) bool {
 }
 
 //look at current token
-pub fn currentToken(self: *const Parser) Token {
+pub fn currentToken(self: *Parser) Token {
     return self.tokenizer.current();
 }
 
