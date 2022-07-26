@@ -3,22 +3,26 @@ const Asm = @This();
 const space_width = 8;
 const space = " ";
 
+const BufWriter = std.io.BufferedWriter(4096, std.fs.File.Writer);
+
 output_file: std.fs.File,
-output_writer: std.fs.File.Writer,
+writer: BufWriter,
 stack_depth: usize = 0,
 
 pub fn init(file: []const u8) !Asm {
     const output_file = try std.fs.cwd().createFile(file, .{});
-    return Asm{ .output_file = output_file, .output_writer = output_file.writer() };
+    return Asm{ .output_file = output_file, .writer = std.io.bufferedWriter(output_file.writer()) };
 }
+
 pub fn deinit(self: *Asm) void {
+    self.writer.flush() catch unreachable;
     self.output_file.close();
     std.debug.assert(self.stack_depth == 0);
 }
 
 /// push or put a register on the stack
 pub fn push(self: *Asm, register: []const u8) !void {
-    try self.output_writer.print("{[spaces]s:>[width]}push {[register]s}\n", .{
+    try self.writer.writer().print("{[spaces]s:>[width]}push {[register]s}\n", .{
         .spaces = space,
         .width = space_width,
         .register = register,
@@ -28,7 +32,7 @@ pub fn push(self: *Asm, register: []const u8) !void {
 
 ///pop or remove a registor from the stack
 pub fn pop(self: *Asm, register: []const u8) !void {
-    try self.output_writer.print("{[spaces]s:>[width]}pop {[register]s}\n", .{
+    try self.writer.writer().print("{[spaces]s:>[width]}pop {[register]s}\n", .{
         .spaces = space,
         .width = space_width,
         .register = register,
@@ -57,14 +61,14 @@ pub fn mov(
     destination_register: []const u8,
 ) !void {
     switch (operand_type) {
-        .immediate_constant => try self.output_writer.print("{[spaces]s:>[width]}mov ${[immediate_constant]d},{[register]s}\n", .{
+        .immediate_constant => try self.writer.writer().print("{[spaces]s:>[width]}mov ${[immediate_constant]d},{[register]s}\n", .{
             .spaces = space,
             .width = space_width,
             .immediate_constant = source_operand,
             .register = destination_register,
         }),
         .register => {
-            try self.output_writer.print("{[spaces]s:>[width]}mov {[source]s},{[destination]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}mov {[source]s},{[destination]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .source = source_operand,
@@ -77,7 +81,7 @@ pub fn mov(
 ///Copies the contents of the source operand (register or memory location) to the destination operand (register) and
 ///zero extends the value.
 pub fn movzb(self: *Asm, source_byte_register: []const u8, destination_register: []const u8) !void {
-    try self.output_writer.print("{[spaces]s:>[width]}movzb {[source_byte_register]s},{[destination_register]s}\n", .{
+    try self.writer.writer().print("{[spaces]s:>[width]}movzb {[source_byte_register]s},{[destination_register]s}\n", .{
         .spaces = space,
         .width = space_width,
         .source_byte_register = source_byte_register,
@@ -87,7 +91,7 @@ pub fn movzb(self: *Asm, source_byte_register: []const u8, destination_register:
 
 ///load effective address of source and place it in destination
 pub fn lea(self: *Asm, offset: usize, source: []const u8, destination: []const u8) !void {
-    try self.output_writer.print("{[spaces]s:>[width]}lea -{[offset]d}({[source]s}),{[destination]s}\n", .{
+    try self.writer.writer().print("{[spaces]s:>[width]}lea -{[offset]d}({[source]s}),{[destination]s}\n", .{
         .spaces = space,
         .width = space_width,
         .offset = offset,
@@ -98,7 +102,7 @@ pub fn lea(self: *Asm, offset: usize, source: []const u8, destination: []const u
 
 /// negate content of register
 pub fn neg(self: *Asm, register: []const u8) !void {
-    try self.output_writer.print("{[spaces]s:>[width]}neg {[register]s}\n", .{
+    try self.writer.writer().print("{[spaces]s:>[width]}neg {[register]s}\n", .{
         .spaces = space,
         .width = space_width,
         .register = register,
@@ -114,7 +118,7 @@ pub fn sub(
 ) !void {
     switch (operand_type) {
         .register => {
-            try self.output_writer.print("{[spaces]s:>[width]}sub {[source]s},{[destination]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}sub {[source]s},{[destination]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .source = source_operand,
@@ -122,7 +126,7 @@ pub fn sub(
             });
         },
         .immediate_constant => {
-            try self.output_writer.print("{[spaces]s:>[width]}sub ${[immediate_constant]d},{[destination]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}sub ${[immediate_constant]d},{[destination]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .immediate_constant = source_operand,
@@ -134,7 +138,7 @@ pub fn sub(
 
 ///add source to destination and store result in destination
 pub fn add(self: *Asm, source: []const u8, destination: []const u8) !void {
-    try self.output_writer.print("{[spaces]s:>[width]}add {[source]s},{[destination]s}\n", .{
+    try self.writer.writer().print("{[spaces]s:>[width]}add {[source]s},{[destination]s}\n", .{
         .spaces = space,
         .width = space_width,
         .source = source,
@@ -145,7 +149,7 @@ pub fn add(self: *Asm, source: []const u8, destination: []const u8) !void {
 ///two operand form of imul
 ///multiply source by destination and store result in destination
 pub fn imul(self: *Asm, source: []const u8, destination: []const u8) !void {
-    try self.output_writer.print("{[spaces]s:>[width]}imul {[source]s},{[destination]s}\n", .{
+    try self.writer.writer().print("{[spaces]s:>[width]}imul {[source]s},{[destination]s}\n", .{
         .spaces = space,
         .width = space_width,
         .source = source,
@@ -160,7 +164,7 @@ pub fn idiv(self: *Asm, divisor: []const u8) !void {
     //sign extending extends the MSB into double the current size of the register
     //this makes sure all 128 bits in RDX:RAX are set before performing idiv instruction
     //else the result would be undefined
-    try self.output_writer.print(
+    try self.writer.writer().print(
         \\{[spaces]s:>[width]}cqo
         \\{[spaces]s:>[width]}idiv {[divisor]s}
         \\
@@ -178,7 +182,7 @@ pub fn idiv(self: *Asm, divisor: []const u8) !void {
 pub fn cmp(self: *Asm, comptime operand_type: OperandType, left_operand: SourceOperandType(operand_type), right_operand: []const u8) !void {
     switch (operand_type) {
         .register => {
-            try self.output_writer.print("{[spaces]s:>[width]}cmp {[left_operand]s},{[right_operand]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}cmp {[left_operand]s},{[right_operand]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .left_operand = left_operand,
@@ -186,7 +190,7 @@ pub fn cmp(self: *Asm, comptime operand_type: OperandType, left_operand: SourceO
             });
         },
         .immediate_constant => {
-            try self.output_writer.print("{[spaces]s:>[width]}cmp ${[left_operand]d},{[right_operand]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}cmp ${[left_operand]d},{[right_operand]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .left_operand = left_operand,
@@ -209,42 +213,42 @@ const Cc = enum {
 pub fn set(self: *Asm, cc: Cc, byte_register: []const u8) !void {
     switch (cc) {
         Cc.equal => {
-            try self.output_writer.print("{[spaces]s:>[width]}sete {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}sete {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
             });
         },
         Cc.not_equal => {
-            try self.output_writer.print("{[spaces]s:>[width]}setne {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}setne {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
             });
         },
         Cc.less_than => {
-            try self.output_writer.print("{[spaces]s:>[width]}setl {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}setl {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
             });
         },
         Cc.less_than_equal => {
-            try self.output_writer.print("{[spaces]s:>[width]}setle {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}setle {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
             });
         },
         Cc.greater_than => {
-            try self.output_writer.print("{[spaces]s:>[width]}setg {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}setg {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
             });
         },
         Cc.greater_than_equal => {
-            try self.output_writer.print("{[spaces]s:>[width]}setge {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}setge {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
@@ -257,42 +261,42 @@ pub fn set(self: *Asm, cc: Cc, byte_register: []const u8) !void {
 pub fn jcc(self: *Asm, cc: Cc, byte_register: []const u8) !void {
     switch (cc) {
         Cc.equal => {
-            try self.output_writer.print("{[spaces]s:>[width]}je {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}je {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
             });
         },
         Cc.not_equal => {
-            try self.output_writer.print("{[spaces]s:>[width]}jne {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}jne {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
             });
         },
         Cc.less_than => {
-            try self.output_writer.print("{[spaces]s:>[width]}jl {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}jl {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
             });
         },
         Cc.less_than_equal => {
-            try self.output_writer.print("{[spaces]s:>[width]}jle {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}jle {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
             });
         },
         Cc.greater_than => {
-            try self.output_writer.print("{[spaces]s:>[width]}jg {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}jg {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
             });
         },
         Cc.greater_than_equal => {
-            try self.output_writer.print("{[spaces]s:>[width]}jge {[byte_register]s}\n", .{
+            try self.writer.writer().print("{[spaces]s:>[width]}jge {[byte_register]s}\n", .{
                 .spaces = space,
                 .width = space_width,
                 .byte_register = byte_register,
@@ -302,7 +306,7 @@ pub fn jcc(self: *Asm, cc: Cc, byte_register: []const u8) !void {
 }
 
 pub fn comment(self: *Asm, asm_comment: []const u8) !void {
-    try self.output_writer.print(
+    try self.writer.writer().print(
         \\
         \\#{[comments]s}
         \\
@@ -310,7 +314,7 @@ pub fn comment(self: *Asm, asm_comment: []const u8) !void {
 }
 
 pub fn labelFunction(self: *Asm, func_name: []const u8) !void {
-    try self.output_writer.print(
+    try self.writer.writer().print(
         \\{[spaces]s:>[width]}.globl {[func_name]s}
         \\{[spaces]s:>[width]}.type  {[func_name]s}, @function
     , .{
@@ -323,7 +327,7 @@ pub fn labelFunction(self: *Asm, func_name: []const u8) !void {
 
 ///Add a label in asm output
 pub fn label(self: *Asm, name: []const u8) !void {
-    try self.output_writer.print(
+    try self.writer.writer().print(
         \\
         \\{[label_name]s}:
         \\
@@ -332,7 +336,7 @@ pub fn label(self: *Asm, name: []const u8) !void {
     });
 }
 pub fn ret(self: *Asm) !void {
-    try self.output_writer.print(
+    try self.writer.writer().print(
         \\{[spaces]s:>[width]}ret
         \\
     , .{
@@ -342,7 +346,7 @@ pub fn ret(self: *Asm) !void {
 }
 
 pub fn jmp(self: *Asm, location: []const u8) !void {
-    try self.output_writer.print(
+    try self.writer.writer().print(
         \\{[space]s:>[width]}jmp {[location]s}
         \\
     , .{
